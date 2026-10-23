@@ -21,36 +21,53 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 设置 Gradle 运行环境 (全局安装 Gradle 8.5)
+      - name: 设置 Gradle 运行环境
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.5'
 
-      - name: 自动修复目录层级与可执行权限
+      - name: 接受 Android SDK 协议
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
+
+      - name: 自动补全 Xposed 离线依赖与修复目录
         run: |
-          echo "=== 正在检查目录文件 ==="
-          ls -la
-          # 如果拖拽上传时多了一层子文件夹，自动将子文件夹内容提取到根目录
+          # 1. 如果工程嵌套在子文件夹中，自动提取到根目录
           if [ ! -f "build.gradle" ]; then
             SUBDIR=$(find . -maxdepth 2 -name "build.gradle" -not -path "*/app/*" | head -n 1 | xargs dirname 2>/dev/null || true)
             if [ -n "$SUBDIR" ] && [ "$SUBDIR" != "." ]; then
-              echo "检测到工程在子目录 $SUBDIR，自动移至根目录"
+              echo "检测到工程在子目录 $SUBDIR，自动移至根目录..."
               cp -rf "$SUBDIR"/* . || true
             fi
           fi
-          # 修复 Windows CRLF 换行符
+
+          # 2. 自动下载 xposed-api-82.jar 到 app/libs，彻底解决依赖缺失
+          mkdir -p app/libs
+          if [ ! -f "app/libs/xposed-api-82.jar" ]; then
+            echo "正在自动下载 xposed-api 依赖..."
+            curl -sLo app/libs/xposed-api-82.jar https://api.xposed.info/de/robv/android/xposed/api/82/api-82.jar || true
+          fi
+
+          # 3. 补全 app/build.gradle 优先使用本地 libs 目录
+          if ! grep -q "fileTree" app/build.gradle 2>/dev/null; then
+            sed -i "s/dependencies {/dependencies {\n    compileOnly fileTree(dir: 'libs', include: ['*.jar'])/" app/build.gradle || true
+          fi
+
+          # 4. 补全 settings.gradle 仓库源
+          if ! grep -q "api.xposed.info" settings.gradle 2>/dev/null; then
+            sed -i "s|mavenCentral()|mavenCentral()\n        maven { url 'https://api.xposed.info/' }|g" settings.gradle || true
+          fi
+
+          # 5. 修复 Windows 换行符
           if [ -f "./gradlew" ]; then
             sed -i 's/\r$//' ./gradlew || true
             chmod +x ./gradlew || true
           fi
 
-      - name: 编译 Debug 版 APK (自动兼容 gradlew 与全局 gradle)
+      - name: 编译 Debug 版 APK
         run: |
           if [ -f "./gradlew" ]; then
-            echo "正在使用 gradlew 编译..."
             ./gradlew assembleDebug --no-daemon --stacktrace
           else
-            echo "未检测到 gradlew，正在使用 setup-gradle 提供的系统 gradle 编译..."
             gradle assembleDebug --no-daemon --stacktrace
           fi
 
