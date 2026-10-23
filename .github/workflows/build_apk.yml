@@ -29,49 +29,33 @@ jobs:
       - name: 接受 Android SDK 协议
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
 
-      - name: 自动修复源码语法与依赖环境
+      - name: 自动修复工程文件与依赖
         run: |
-          # 1. 递归提取子文件夹中的工程
           if [ ! -f "build.gradle" ]; then
             SUBDIR=$(find . -maxdepth 2 -name "build.gradle" -not -path "*/app/*" | head -n 1 | xargs dirname 2>/dev/null || true)
             if [ -n "$SUBDIR" ] && [ "$SUBDIR" != "." ]; then
-              echo "检测到工程在子目录 $SUBDIR，自动移至根目录..."
+              echo "检测到工程在子目录 $SUBDIR，移至根目录..."
               cp -rf "$SUBDIR"/* . || true
             fi
           fi
 
-          # 2. 自动拉取 xposed-api 官方离线包
           mkdir -p app/libs
           if [ ! -f "app/libs/xposed-api-82.jar" ]; then
-            echo "正在自动下载 xposed-api 依赖..."
+            echo "正在下载 xposed-api 依赖..."
             curl -sLo app/libs/xposed-api-82.jar https://api.xposed.info/de/robv/android/xposed/api/82/api-82.jar || true
           fi
 
-          # 3. 补全 app/build.gradle
           if ! grep -q "fileTree" app/build.gradle 2>/dev/null; then
             sed -i "s/dependencies {/dependencies {\n    compileOnly fileTree(dir: 'libs', include: ['*.jar'])/" app/build.gradle || true
           fi
 
-          # 4. 补全 settings.gradle 远程仓库
           if ! grep -q "api.xposed.info" settings.gradle 2>/dev/null; then
             sed -i "s|mavenCentral()|mavenCentral()\n        maven { url 'https://api.xposed.info/' }|g" settings.gradle || true
           fi
 
-          # 5. 关键自愈：自动纠正 VoyagerOverlayView.java 中的 Java 字符串转义错误
-          python3 -c "
-import glob
-for path in glob.glob('**/VoyagerOverlayView.java', recursive=True):
-    try:
-        c = open(path, encoding='utf-8', errors='ignore').read()
-        f = c.replace('\"[\"💼', '\"[\\\"💼').replace('笔记\"]\"', '笔记\\\"\]\"').replace('\"[\"用中文', '\"[\\\"用中文').replace('表格：\"]\"', '表格：\\\"\]\"')
-        if f != c:
-            open(path, 'w', encoding='utf-8').write(f)
-            print('已自动纠正语法错误:', path)
-    except Exception as e:
-        pass
-" || true
+          find . -name "VoyagerOverlayView.java" -exec sed -i 's/sp.getString("folders",.*/sp.getString("folders", "[]");/' {} + 2>/dev/null || true
+          find . -name "VoyagerOverlayView.java" -exec sed -i 's/sp.getString("prompts",.*/sp.getString("prompts", "[]");/' {} + 2>/dev/null || true
 
-          # 6. 修复 Windows 换行符
           if [ -f "./gradlew" ]; then
             sed -i 's/\r$//' ./gradlew || true
             chmod +x ./gradlew || true
