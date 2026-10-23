@@ -122,11 +122,16 @@ jobs:
             gradle assembleDebug --no-daemon --stacktrace
           fi
 
-      - name: 上传 APK 安装包至 GitHub 产物 (Artifacts)
+      - name: 提取扁平化 APK (彻底去除多层嵌套文件夹)
+        run: |
+          mkdir -p single_apk
+          find . -name "*debug*.apk" -exec cp {} single_apk/Voyager-Gemini-Enhancer.apk \\;
+
+      - name: 上传纯净版 APK (压缩包内直接是 APK，零文件夹嵌套)
         uses: actions/upload-artifact@v4
         with:
-          name: Gemini-Voyager-Enhancer-APK
-          path: "**/app/build/outputs/apk/debug/*.apk"
+          name: Voyager-Gemini-Enhancer-APK
+          path: single_apk/Voyager-Gemini-Enhancer.apk
           retention-days: 7`
     },
     {
@@ -287,10 +292,10 @@ dependencies {
           </div>
 
           <h2 className="text-xl sm:text-2xl font-bold text-zinc-100 tracking-tight">
-            Gemini 手机客户端 原生增强 Xposed 插件工程
+            Gemini Voyager 手机端旗舰版增强插件 (LSPosed)
           </h2>
           <p className="text-xs sm:text-sm text-zinc-300 max-w-2xl leading-relaxed">
-            专为 <strong className="text-emerald-400">Google Gemini 原生安卓客户端</strong> 打造！采用 <strong className="text-emerald-400">Android DecorView 原生悬浮抽屉注入</strong>，在 App 内部完整复刻 PC 插件 Voyager 的「文件夹管理 + 常用 Prompt 库一键自动填入提问框」！
+            已升级 <strong className="text-emerald-400">52dp 圆形翡翠绿发光悬浮球</strong>（支持手指自由拖拽 + 松手平滑吸附屏幕边缘）！集成 <strong className="text-emerald-400">三级彩色文件夹树、垂直时间线小地图、支持 {{变量}} 模版的 Prompt 库、Markdown 导出与公式 LaTeX 提取</strong>！
           </p>
         </div>
 
