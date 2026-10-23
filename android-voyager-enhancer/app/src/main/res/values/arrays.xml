@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="xposed_scope">
+        <item>com.google.android.apps.bard</item>
+        <item>com.google.android.googlequicksearchbox</item>
+        <item>com.openai.chatgpt</item>
+        <item>com.anthropic.claude</item>
+        <item>com.deepseek.chat</item>
+    </string-array>
+</resources>

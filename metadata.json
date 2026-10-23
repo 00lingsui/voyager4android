@@ -1,0 +1,6 @@
+{
+  "name": "Voyager Android Agent Architect",
+  "description": "LLM-driven Autonomous Android Agent architecture blueprint, IPC protocol inspector, and Xposed in-process execution workbench based on the Voyager paradigm.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,32 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.voyager.gemini.enhancer'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.voyager.gemini.enhancer"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // Xposed 核心接口 (编译期 compileOnly)
+    compileOnly 'de.robv.android.xposed:api:82'
+}

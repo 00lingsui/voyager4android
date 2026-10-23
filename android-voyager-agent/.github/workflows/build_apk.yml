@@ -1,0 +1,41 @@
+name: 自动编译 Xposed 模块 APK
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码仓库
+        uses: actions/checkout@v4
+
+      - name: 设置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: 赋予 Gradle 执行权限
+        run: chmod +x gradlew || true
+
+      - name: 编译 Debug 版 APK
+        run: |
+          if [ -f "./gradlew" ] && grep -q "gradle" ./gradlew; then
+            gradle assembleDebug --stacktrace
+          else
+            gradle assembleDebug --stacktrace
+          fi
+
+      - name: 上传 APK 产物到 GitHub Artifacts (供直接下载)
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoyagerAgent-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 7
