@@ -10,6 +10,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: 检出仓库源码
@@ -69,14 +71,37 @@ jobs:
             gradle assembleDebug --no-daemon --stacktrace
           fi
 
-      - name: 提取扁平化 APK (彻底去除多层嵌套文件夹)
+      - name: 提取扁平化 APK (零文件夹嵌套)
         run: |
           mkdir -p single_apk
           find . -name "*debug*.apk" -exec cp {} single_apk/Voyager-Gemini-Enhancer.apk \;
+          ls -lh single_apk/
 
-      - name: 上传纯净版 APK (压缩包内直接是 APK，零文件夹嵌套)
+      - name: 备份上传至 Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Voyager-Gemini-Enhancer-APK
           path: single_apk/Voyager-Gemini-Enhancer.apk
           retention-days: 7
+
+      - name: 自动发布到 GitHub Releases (免解压直链 APK)
+        uses: softprops/action-gh-release@v2
+        if: github.event_name != 'pull_request'
+        with:
+          tag_name: "v1.0.${{ github.run_number }}"
+          name: "Voyager for Gemini (Build #${{ github.run_number }})"
+          body: |
+            ### 🪐 Voyager for Gemini 原生增强插件直装包已生成！
+            
+            - 🔘 **52dp 翡翠绿圆形发光悬浮球**：全屏自由拖拽，松手平滑自动贴边吸附，闲置自动淡化
+            - 📂 **三级分类文件夹**：真正收录当前 Gemini 会话真实 URL，点击在 App 内直接跳转历史会话
+            - 📍 **实时时间线导航**：自动抓取当前聊天真实问题节点，点击真正平滑滚动居中并高亮闪烁
+            - 💾 **真实全文导出**：格式化为带代码高亮的标准 Markdown / JSON，自动唤起系统分享
+            - 💬 **消息一键引用回复**
+            - 💡 **提示词库与变量模版**：支持 `{{变量}}` 填入提问框并自动聚焦
+            - 📐 **公式多格式复制**：支持 LaTeX / MathML (Word) / Notion
+            
+            👉 **点击下方 Assets 里的 `Voyager-Gemini-Enhancer.apk` 即可直接在手机上下载安装（无需解压）！**
+          files: single_apk/Voyager-Gemini-Enhancer.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
