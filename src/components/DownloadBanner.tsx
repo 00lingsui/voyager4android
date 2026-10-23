@@ -73,30 +73,66 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
 
       - name: 设置 Gradle 运行环境
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.5'
 
-      - name: 授权 gradlew 脚本
-        run: chmod +x gradlew || true
+      - name: 接受 Android SDK 协议
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
+
+      - name: 自动修复源码语法与依赖环境
+        run: |
+          if [ ! -f "build.gradle" ]; then
+            SUBDIR=$(find . -maxdepth 2 -name "build.gradle" -not -path "*/app/*" | head -n 1 | xargs dirname 2>/dev/null || true)
+            if [ -n "$SUBDIR" ] && [ "$SUBDIR" != "." ]; then
+              echo "检测到工程在子目录 $SUBDIR，自动移至根目录..."
+              cp -rf "$SUBDIR"/* . || true
+            fi
+          fi
+
+          mkdir -p app/libs
+          if [ ! -f "app/libs/xposed-api-82.jar" ]; then
+            echo "正在自动下载 xposed-api 依赖..."
+            curl -sLo app/libs/xposed-api-82.jar https://api.xposed.info/de/robv/android/xposed/api/82/api-82.jar || true
+          fi
+
+          if ! grep -q "fileTree" app/build.gradle 2>/dev/null; then
+            sed -i "s/dependencies {/dependencies {\\n    compileOnly fileTree(dir: 'libs', include: ['*.jar'])/" app/build.gradle || true
+          fi
+
+          if ! grep -q "api.xposed.info" settings.gradle 2>/dev/null; then
+            sed -i "s|mavenCentral()|mavenCentral()\\n        maven { url 'https://api.xposed.info/' }|g" settings.gradle || true
+          fi
+
+          find . -name "VoyagerOverlayView.java" -exec sed -i 's/sp.getString("folders",.*/sp.getString("folders", "[]");/' {} + 2>/dev/null || true
+          find . -name "VoyagerOverlayView.java" -exec sed -i 's/sp.getString("prompts",.*/sp.getString("prompts", "[]");/' {} + 2>/dev/null || true
+
+          if [ -f "./gradlew" ]; then
+            sed -i 's/\\r$//' ./gradlew || true
+            chmod +x ./gradlew || true
+          fi
 
       - name: 编译 Debug 版 APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: |
+          if [ -f "./gradlew" ]; then
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          else
+            gradle assembleDebug --no-daemon --stacktrace
+          fi
 
       - name: 上传 APK 安装包至 GitHub 产物 (Artifacts)
         uses: actions/upload-artifact@v4
         with:
           name: Gemini-Voyager-Enhancer-APK
-          path: app/build/outputs/apk/debug/*.apk
+          path: "**/app/build/outputs/apk/debug/*.apk"
           retention-days: 7`
     },
     {
-      name: 'app/src/main/java/com/voyager/enhancer/HookEntry.java',
-      desc: 'Xposed Hook 入口（拦截 WebView 注入脚本）',
-      content: `package com.voyager.enhancer;
+      name: 'app/src/main/java/com/voyager/gemini/enhancer/HookEntry.java',
+      desc: 'Gemini 原生客户端 Xposed 注入入口',
+      content: `package com.voyager.gemini.enhancer;
 
 import android.content.Context;
 import android.webkit.ValueCallback;
