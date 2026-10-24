@@ -132,7 +132,28 @@ jobs:
         with:
           name: Voyager-Gemini-Enhancer-APK
           path: single_apk/Voyager-Gemini-Enhancer.apk
-          retention-days: 7`
+          retention-days: 7
+
+      - name: 自动发布到 GitHub Releases (免解压直链 APK)
+        uses: softprops/action-gh-release@v2
+        if: github.event_name != 'pull_request'
+        with:
+          tag_name: "v1.00"
+          name: "Voyager for Gemini 1.00"
+          body: |
+            ## 🪐 Voyager for Gemini 1.00 更新日志
+
+            - 🔘 **圆形发光悬浮球**：升级为 52dp 翡翠绿圆形发光悬浮球，支持全屏自由拖拽、松手平滑自动贴边吸附、闲置自动半透明淡化。
+            - 🔖 **会话书签与极速直达**：新增星标会话书签功能，一键收藏重点对话；点击书签卡片即刻直达相对应对话记录与完整问答详情页面。
+            - 📂 **三级分类文件夹**：精准捕获并收录当前会话，支持树状文件夹归类管理与点击回溯问答记录。
+            - 📍 **对话时间线导航**：自动提炼聊天提问节点为可视化小地图，点击平滑滚动并高亮定位当前对话。
+            - 💾 **多格式数据导出**：一键导出包含标准代码高亮渲染的 Markdown / JSON 格式文本，自动唤起系统级分享。
+            - 💡 **提示词库与变量模版**：内置 Prompt 词库，支持 {{变量}} 占位符一键填入输入框并聚焦。
+            - 🔑 **永久固定签名**：内置统一 Release 签名配置，后续版本覆盖更新无需重复卸载安装。
+          files: single_apk/Voyager-Gemini-Enhancer.apk
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+`
     },
     {
       name: 'app/src/main/java/com/voyager/gemini/enhancer/HookEntry.java',
@@ -252,11 +273,11 @@ android {
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.voyager.enhancer"
-        minSdk 24
+        applicationId "com.voyager.gemini.enhancer"
+        minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 100
+        versionName "1.00"
     }
 
     compileOptions {
@@ -286,16 +307,19 @@ dependencies {
               <FolderArchive className="w-3.5 h-3.5" />
               <span>内存二进制直出 · 100% 完整防损坏</span>
             </span>
+            <span className="text-xs font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/30">
+              正式发布: Voyager for Gemini 1.00 (v1.00)
+            </span>
             <span className="text-xs font-mono text-zinc-400 bg-zinc-800 px-2 py-0.5 rounded border border-zinc-700">
-              作用目标: Gemini 原生 App (com.google.android.apps.bard)
+              com.google.android.apps.bard
             </span>
           </div>
 
           <h2 className="text-xl sm:text-2xl font-bold text-zinc-100 tracking-tight">
-            Gemini Voyager 手机端旗舰版增强插件 (LSPosed)
+            Voyager for Gemini 1.00 (LSPosed 原生增强模块)
           </h2>
           <p className="text-xs sm:text-sm text-zinc-300 max-w-2xl leading-relaxed">
-            已升级 <strong className="text-emerald-400">52dp 圆形翡翠绿发光悬浮球</strong>（支持手指自由拖拽 + 松手平滑吸附屏幕边缘）！集成 <strong className="text-emerald-400">三级彩色文件夹树（点击直接进入对话）、永久固定签名（免卸载覆盖升级）、垂直时间线小地图、支持 {'{{变量}}'} 模版的 Prompt 库、Markdown 导出与公式 LaTeX 提取</strong>！
+            重置并正式发布 <strong className="text-emerald-400">Voyager for Gemini 1.00</strong>！包含 <strong className="text-emerald-400">52dp 圆形翡翠绿发光悬浮球</strong>（全屏自由拖拽 + 松手自动贴边吸附）、<strong className="text-emerald-400">🔖 会话书签快捷中心（一键加星，点击卡片直接直达问答记录页面）</strong>、三级分类文件夹、实时时间线导航、纯净 Markdown 导出、Prompt 模版与统一固定 Release 签名（免卸载覆盖升级）！
           </p>
         </div>
 

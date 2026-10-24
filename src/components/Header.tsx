@@ -8,6 +8,7 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
   const navItems = [
+    { id: 'releases', label: '版本发布与更新日志 (v1.00)', icon: Sparkles },
     { id: 'arch', label: '核心架构全景', icon: Layers },
     { id: 'compare', label: '技术选型深度对比', icon: ArrowRightLeft },
     { id: 'poc', label: '第一阶段 PoC 代码清单', icon: Terminal },
@@ -26,14 +27,17 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             <div className="min-w-0">
               <div className="flex items-center space-x-2">
                 <h1 className="text-sm sm:text-base font-semibold text-zinc-100 tracking-tight truncate">
-                  Voyager AI 对话增强
+                  Voyager for Gemini 1.00
                 </h1>
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-emerald-400 border border-zinc-700 shrink-0">
-                  Xposed
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 shrink-0">
+                  v1.00
+                </span>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700 shrink-0">
+                  LSPosed
                 </span>
               </div>
               <p className="text-[11px] text-zinc-400 truncate hidden sm:block">
-                ChatGPT / Gemini / Claude 网页文件夹与 Prompt 库增强插件
+                Gemini 客户端深度增强 · 圆形发光贴边悬浮球 · 会话书签与文件夹 · 问答时间线 · 全文导出
               </p>
             </div>
           </div>

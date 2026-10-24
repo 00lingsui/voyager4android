@@ -350,6 +350,7 @@ public class VoyagerOverlayView extends FrameLayout {
 
         String[][] tabs = {
                 {"folders", "📂 文件夹"},
+                {"bookmarks", "🔖 书签"},
                 {"timeline", "📍 时间线"},
                 {"prompts", "💡 提示词"},
                 {"export", "💾 导出"},
@@ -419,7 +420,7 @@ public class VoyagerOverlayView extends FrameLayout {
         currentTab = tabId;
         contentContainer.removeAllViews();
 
-        for (String tId : new String[]{"folders", "timeline", "prompts", "export", "tools", "backup"}) {
+        for (String tId : new String[]{"folders", "bookmarks", "timeline", "prompts", "export", "tools", "backup"}) {
             TextView btn = drawerLayout.findViewWithTag("TAB_" + tId);
             if (btn != null) {
                 styleTabButton(btn, tId.equals(tabId));
@@ -429,6 +430,9 @@ public class VoyagerOverlayView extends FrameLayout {
         switch (tabId) {
             case "folders":
                 renderFoldersView();
+                break;
+            case "bookmarks":
+                renderBookmarksView();
                 break;
             case "timeline":
                 renderTimelineView();
@@ -771,6 +775,19 @@ public class VoyagerOverlayView extends FrameLayout {
                     snapBtn.setOnClickListener(v -> showSnapshotViewerDialog(chat));
                     chatItem.addView(snapBtn);
 
+                    // 收藏/取消书签快捷按钮
+                    TextView starBtn = new TextView(getContext());
+                    final boolean isStarred = isChatBookmarked(chat);
+                    starBtn.setText(isStarred ? "★" : "☆");
+                    starBtn.setTextColor(isStarred ? Color.parseColor("#F59E0B") : getSecondaryTextColor());
+                    starBtn.setPadding(dp(4), dp(4), dp(4), dp(4));
+                    starBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    starBtn.setOnClickListener(v -> {
+                        toggleBookmark(chat);
+                        renderFoldersView();
+                    });
+                    chatItem.addView(starBtn);
+
                     // 移出会话按钮
                     TextView delChatBtn = new TextView(getContext());
                     delChatBtn.setText("✕");
@@ -804,31 +821,54 @@ public class VoyagerOverlayView extends FrameLayout {
 
     /**
      * 完整会话详情与续接看板：直接呈现该会话中记录的所有真实问答，
-     * 并提供【一键填入 Gemini 提问框续聊】、【唤起原生路由跳转】与【导出】操作
+     * 并提供【一键填入 Gemini 提问框续聊】、【唤起原生路由跳转】、【书签快捷标星】与【导出】操作
      */
     private void renderConversationDetailView(final SavedChat chat, final FolderData parentFolder) {
+        renderConversationDetailView(chat, parentFolder != null ? parentFolder.name : "文件夹", this::renderFoldersView);
+    }
+
+    private void renderConversationDetailView(final SavedChat chat, final String sourceTitle, final Runnable onBackAction) {
         contentContainer.removeAllViews();
 
-        // 顶栏：返回按钮 + 会话所属文件夹
+        // 顶栏：返回按钮 + 会话所属分类/来源 + 顶部快速切换书签按钮
         LinearLayout header = new LinearLayout(getContext());
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(0, dp(4), 0, dp(10));
 
         TextView backBtn = new TextView(getContext());
-        backBtn.setText("← 返回文件夹");
+        backBtn.setText("← 返回 " + (sourceTitle != null ? sourceTitle : ""));
         backBtn.setTextColor(Color.parseColor("#10A37F"));
         backBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         backBtn.setTypeface(null, Typeface.BOLD);
         backBtn.setPadding(0, dp(6), dp(12), dp(6));
-        backBtn.setOnClickListener(v -> renderFoldersView());
+        backBtn.setOnClickListener(v -> {
+            if (onBackAction != null) {
+                onBackAction.run();
+            } else {
+                renderFoldersView();
+            }
+        });
         header.addView(backBtn);
 
         TextView folderBadge = new TextView(getContext());
-        folderBadge.setText("[" + parentFolder.name + "]");
+        folderBadge.setText("[" + (sourceTitle != null ? sourceTitle : "记录") + "]");
         folderBadge.setTextColor(getSecondaryTextColor());
         folderBadge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         header.addView(folderBadge, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+
+        final boolean isStarred = isChatBookmarked(chat);
+        TextView starTopBtn = new TextView(getContext());
+        starTopBtn.setText(isStarred ? "★ 已存书签" : "☆ 设为书签");
+        starTopBtn.setTextColor(isStarred ? Color.parseColor("#F59E0B") : Color.parseColor("#10A37F"));
+        starTopBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        starTopBtn.setTypeface(null, Typeface.BOLD);
+        starTopBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
+        starTopBtn.setOnClickListener(v -> {
+            toggleBookmark(chat);
+            renderConversationDetailView(chat, sourceTitle, onBackAction);
+        });
+        header.addView(starTopBtn);
 
         contentContainer.addView(header);
 
@@ -858,23 +898,34 @@ public class VoyagerOverlayView extends FrameLayout {
 
         contentContainer.addView(titleCard);
 
-        // 核心操作快捷入口
+        // 核心操作快捷入口 (高频行动项：一键填入提问框续聊 / 官方跳转 / 书签切换)
         LinearLayout actionRow = new LinearLayout(getContext());
         actionRow.setOrientation(LinearLayout.HORIZONTAL);
         actionRow.setPadding(0, dp(8), 0, dp(12));
 
-        Button resumeChatBtn = createStyledButton("🚀 填入提问框续聊", "#10A37F", "#09090B");
+        Button resumeChatBtn = createStyledButton("🚀 填入续聊", "#10A37F", "#09090B");
         resumeChatBtn.setLayoutParams(new LinearLayout.LayoutParams(0, dp(38), 1.0f));
         resumeChatBtn.setOnClickListener(v -> quickResumeIntoGemini(chat));
         actionRow.addView(resumeChatBtn);
 
-        View spacer = new View(getContext());
-        actionRow.addView(spacer, new LinearLayout.LayoutParams(dp(8), dp(1)));
+        View spacer1 = new View(getContext());
+        actionRow.addView(spacer1, new LinearLayout.LayoutParams(dp(6), dp(1)));
 
-        Button nativeJumpBtn = createStyledButton("🔗 唤起官方跳转", isDarkTheme ? "#27272A" : "#E2E8F0", isDarkTheme ? "#FFFFFF" : "#0F172A");
+        Button nativeJumpBtn = createStyledButton("🔗 官方跳转", isDarkTheme ? "#27272A" : "#E2E8F0", isDarkTheme ? "#FFFFFF" : "#0F172A");
         nativeJumpBtn.setLayoutParams(new LinearLayout.LayoutParams(0, dp(38), 1.0f));
         nativeJumpBtn.setOnClickListener(v -> enterAndSwitchConversation(chat));
         actionRow.addView(nativeJumpBtn);
+
+        View spacer2 = new View(getContext());
+        actionRow.addView(spacer2, new LinearLayout.LayoutParams(dp(6), dp(1)));
+
+        Button bookmarkActionBtn = createStyledButton(isStarred ? "★ 书签" : "☆ 书签", isStarred ? "#F59E0B" : (isDarkTheme ? "#27272A" : "#E2E8F0"), isStarred ? "#09090B" : (isDarkTheme ? "#FFFFFF" : "#0F172A"));
+        bookmarkActionBtn.setLayoutParams(new LinearLayout.LayoutParams(0, dp(38), 0.85f));
+        bookmarkActionBtn.setOnClickListener(v -> {
+            toggleBookmark(chat);
+            renderConversationDetailView(chat, sourceTitle, onBackAction);
+        });
+        actionRow.addView(bookmarkActionBtn);
 
         contentContainer.addView(actionRow);
 
@@ -884,7 +935,7 @@ public class VoyagerOverlayView extends FrameLayout {
 
         String snapshot = chat.markdownSnapshot;
         if (snapshot == null || snapshot.trim().isEmpty()) {
-            snapshot = "### 👤 提问\n" + chat.title + "\n\n### 🤖 Gemini 回答\n（该对话已记录，点击上方「🚀 填入提问框续聊」可直接在 Gemini 中继续追问）";
+            snapshot = "### 👤 提问\n" + chat.title + "\n\n### 🤖 Gemini 回答\n（该对话已记录，点击上方「🚀 填入续聊」可直接在 Gemini 中继续追问）";
         }
 
         TextView bodyTv = new TextView(getContext());
@@ -912,6 +963,155 @@ public class VoyagerOverlayView extends FrameLayout {
             activity.startActivity(Intent.createChooser(shareIntent, "导出对话"));
         });
         contentContainer.addView(shareBtn);
+    }
+
+    /**
+     * 会话书签快捷中心：一键收藏常用重点会话，
+     * 点击任意书签卡片，一下子直接打开相对应会话的完整问答记录看板与操作中心！
+     */
+    private void renderBookmarksView() {
+        final List<SavedChat> bookmarks = loadPersistedBookmarks();
+
+        TextView intro = createSectionTitle("🔖 会话书签速递 (" + bookmarks.size() + " 条重点会话)");
+        contentContainer.addView(intro);
+
+        // 顶栏操作卡片：一键将当前正在进行的会话添加为书签
+        LinearLayout actionCard = new LinearLayout(getContext());
+        actionCard.setOrientation(LinearLayout.VERTICAL);
+        actionCard.setPadding(dp(12), dp(10), dp(12), dp(10));
+        GradientDrawable acGd = new GradientDrawable();
+        acGd.setColor(isDarkTheme ? Color.parseColor("#14241F") : Color.parseColor("#ECFDF5"));
+        acGd.setCornerRadius(dp(8));
+        acGd.setStroke(dp(1), Color.parseColor("#10A37F"));
+        actionCard.setBackground(acGd);
+
+        TextView currentTitleTv = new TextView(getContext());
+        String displayReal = currentRealTitle.isEmpty() ? "当前实时会话" : currentRealTitle;
+        currentTitleTv.setText("🎯 实时会话: " + displayReal);
+        currentTitleTv.setTextColor(Color.parseColor("#10A37F"));
+        currentTitleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        currentTitleTv.setTypeface(null, Typeface.BOLD);
+        currentTitleTv.setSingleLine(true);
+        currentTitleTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        actionCard.addView(currentTitleTv);
+
+        Button addCurrentBookmarkBtn = createStyledButton("⭐ 一键将当前会话加入书签", "#10A37F", "#09090B");
+        addCurrentBookmarkBtn.setOnClickListener(v -> addCurrentChatToBookmarks());
+        actionCard.addView(addCurrentBookmarkBtn);
+
+        LinearLayout.LayoutParams acLp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+        acLp.bottomMargin = dp(12);
+        contentContainer.addView(actionCard, acLp);
+
+        // 书签列表
+        if (bookmarks.isEmpty()) {
+            TextView emptyTv = new TextView(getContext());
+            emptyTv.setText("暂无收藏的书签。\n\n在与 Gemini 对话时，点击上方「⭐ 一键将当前会话加入书签」即可将当前问答永久加入书签；随时点击即可直接跳转至对应问答记录页面！");
+            emptyTv.setTextColor(getSecondaryTextColor());
+            emptyTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            emptyTv.setLineSpacing(dp(2), 1.2f);
+            emptyTv.setPadding(dp(4), dp(8), dp(4), dp(8));
+            contentContainer.addView(emptyTv);
+            return;
+        }
+
+        for (final SavedChat chat : bookmarks) {
+            LinearLayout itemCard = new LinearLayout(getContext());
+            itemCard.setOrientation(LinearLayout.VERTICAL);
+            itemCard.setPadding(dp(12), dp(12), dp(12), dp(12));
+
+            GradientDrawable cardGd = new GradientDrawable();
+            cardGd.setColor(getCardBgColor());
+            cardGd.setCornerRadius(dp(8));
+            cardGd.setStroke(dp(1), getCardBorderColor());
+            itemCard.setBackground(cardGd);
+
+            // 标题行
+            LinearLayout titleRow = new LinearLayout(getContext());
+            titleRow.setOrientation(LinearLayout.HORIZONTAL);
+            titleRow.setGravity(Gravity.CENTER_VERTICAL);
+
+            TextView starIcon = new TextView(getContext());
+            starIcon.setText("⭐ ");
+            starIcon.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            titleRow.addView(starIcon);
+
+            TextView titleTv = new TextView(getContext());
+            titleTv.setText(chat.title);
+            titleTv.setTextColor(getPrimaryTextColor());
+            titleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            titleTv.setTypeface(null, Typeface.BOLD);
+            titleTv.setSingleLine(true);
+            titleTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            titleRow.addView(titleTv, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+
+            // 删除书签按钮
+            TextView delBtn = new TextView(getContext());
+            delBtn.setText(" ✕ ");
+            delBtn.setTextColor(getSecondaryTextColor());
+            delBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            delBtn.setPadding(dp(6), dp(2), dp(2), dp(2));
+            delBtn.setOnClickListener(v -> {
+                bookmarks.remove(chat);
+                savePersistedBookmarks(bookmarks);
+                Toast.makeText(activity, "已移除书签: " + chat.title, Toast.LENGTH_SHORT).show();
+                renderBookmarksView();
+            });
+            titleRow.addView(delBtn);
+
+            itemCard.addView(titleRow);
+
+            // 日期与问答摘要
+            TextView dateTv = new TextView(getContext());
+            dateTv.setText("📅 " + chat.date);
+            dateTv.setTextColor(getSecondaryTextColor());
+            dateTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+            dateTv.setPadding(0, dp(4), 0, dp(6));
+            itemCard.addView(dateTv);
+
+            String excerpt = "点击直接跳转至该对话的完整记录与操作中心...";
+            if (chat.markdownSnapshot != null && !chat.markdownSnapshot.trim().isEmpty()) {
+                String clean = chat.markdownSnapshot.replace("#", "").replace("*", "").trim();
+                excerpt = clean.length() > 60 ? clean.substring(0, 60) + "..." : clean;
+            }
+            TextView excerptTv = new TextView(getContext());
+            excerptTv.setText(excerpt);
+            excerptTv.setTextColor(getSecondaryTextColor());
+            excerptTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            excerptTv.setMaxLines(2);
+            excerptTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            itemCard.addView(excerptTv);
+
+            // 操作底栏：提示与续聊
+            LinearLayout bottomRow = new LinearLayout(getContext());
+            bottomRow.setOrientation(LinearLayout.HORIZONTAL);
+            bottomRow.setGravity(Gravity.CENTER_VERTICAL);
+            bottomRow.setPadding(0, dp(8), 0, 0);
+
+            TextView jumpHintTv = new TextView(getContext());
+            jumpHintTv.setText("⚡ 点击直接进入相对应记录页");
+            jumpHintTv.setTextColor(Color.parseColor("#10A37F"));
+            jumpHintTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            jumpHintTv.setTypeface(null, Typeface.BOLD);
+            bottomRow.addView(jumpHintTv, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+
+            TextView quickResumeBtn = new TextView(getContext());
+            quickResumeBtn.setText("🚀 填入续聊");
+            quickResumeBtn.setTextColor(isDarkTheme ? Color.parseColor("#38BDF8") : Color.parseColor("#0284C7"));
+            quickResumeBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            quickResumeBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
+            quickResumeBtn.setOnClickListener(v -> quickResumeIntoGemini(chat));
+            bottomRow.addView(quickResumeBtn);
+
+            itemCard.addView(bottomRow);
+
+            // 【核心关键】：点击书签卡片，一下子跳转到相对应的对话记录页面！
+            itemCard.setOnClickListener(v -> renderConversationDetailView(chat, "🔖 我的书签", this::renderBookmarksView));
+
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = dp(8);
+            contentContainer.addView(itemCard, lp);
+        }
     }
 
     /**
@@ -1134,6 +1334,20 @@ public class VoyagerOverlayView extends FrameLayout {
             snapBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
             snapBtn.setOnClickListener(v -> showSnapshotViewerDialog(chat));
             hud.addView(snapBtn);
+
+            // 快捷书签按钮
+            TextView bookmarkHudBtn = new TextView(activity);
+            boolean isHudFav = isChatBookmarked(chat);
+            bookmarkHudBtn.setText(isHudFav ? " ★ 已存" : " ⭐ 书签");
+            bookmarkHudBtn.setTextColor(Color.parseColor("#F59E0B"));
+            bookmarkHudBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            bookmarkHudBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
+            bookmarkHudBtn.setOnClickListener(v -> {
+                toggleBookmark(chat);
+                boolean nowFav = isChatBookmarked(chat);
+                bookmarkHudBtn.setText(nowFav ? " ★ 已存" : " ⭐ 书签");
+            });
+            hud.addView(bookmarkHudBtn);
 
             // 关闭按钮
             TextView closeHudBtn = new TextView(activity);
@@ -1757,6 +1971,106 @@ public class VoyagerOverlayView extends FrameLayout {
             }
             sp.edit().putString("folders_v3", arr.toString()).apply();
         } catch (Exception ignored) {}
+    }
+
+    // ==================== 书签持久化与管理 ====================
+    public boolean isChatBookmarked(SavedChat chat) {
+        if (chat == null) return false;
+        List<SavedChat> list = loadPersistedBookmarks();
+        for (SavedChat item : list) {
+            if ((chat.url != null && !chat.url.isEmpty() && chat.url.equals(item.url)) ||
+                (chat.title != null && !chat.title.isEmpty() && chat.title.equals(item.title))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public void toggleBookmark(SavedChat chat) {
+        if (chat == null) return;
+        List<SavedChat> list = loadPersistedBookmarks();
+        int existingIdx = -1;
+        for (int i = 0; i < list.size(); i++) {
+            SavedChat item = list.get(i);
+            if ((chat.url != null && !chat.url.isEmpty() && chat.url.equals(item.url)) ||
+                (chat.title != null && !chat.title.isEmpty() && chat.title.equals(item.title))) {
+                existingIdx = i;
+                break;
+            }
+        }
+        if (existingIdx >= 0) {
+            list.remove(existingIdx);
+            savePersistedBookmarks(list);
+            Toast.makeText(activity, "已从书签移除", Toast.LENGTH_SHORT).show();
+        } else {
+            list.add(0, chat);
+            savePersistedBookmarks(list);
+            Toast.makeText(activity, "⭐ 已添加至会话书签！", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    public List<SavedChat> loadPersistedBookmarks() {
+        List<SavedChat> list = new ArrayList<>();
+        String raw = sp.getString("bookmarks_v2", null);
+        if (raw == null) {
+            SavedChat sample = new SavedChat();
+            sample.title = "💡 Gemini 进阶思维链与深度 Prompt 指引";
+            sample.url = "https://gemini.google.com/app";
+            sample.date = "精选书签";
+            sample.markdownSnapshot = "### 👤 提问\n如何利用思维链 (Chain of Thought) 最大化发挥 Gemini 的深度推理能力？\n\n### 🤖 Gemini 回答\n引导模型「慢思考」的最佳策略：\n1. **步骤解构**：明确要求「Step-by-step」分步推演；\n2. **边界检验**：让模型在给出结论前自我反思潜在边界条件；\n3. **结构化输出**：使用 Markdown 表格与行动项输出可执行的结论。\n\n点击上方「🚀 填入续聊」即可在 Gemini 输入框中立即展开深度追问！";
+            list.add(sample);
+            savePersistedBookmarks(list);
+            return list;
+        }
+
+        try {
+            JSONArray arr = new JSONArray(raw);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject obj = arr.getJSONObject(i);
+                SavedChat sc = new SavedChat();
+                sc.title = obj.optString("title");
+                sc.url = obj.optString("url");
+                sc.date = obj.optString("date");
+                sc.markdownSnapshot = obj.optString("snapshot");
+                list.add(sc);
+            }
+        } catch (Exception ignored) {}
+        return list;
+    }
+
+    public void savePersistedBookmarks(List<SavedChat> list) {
+        try {
+            JSONArray arr = new JSONArray();
+            for (SavedChat sc : list) {
+                JSONObject obj = new JSONObject();
+                obj.put("title", sc.title);
+                obj.put("url", sc.url);
+                obj.put("date", sc.date);
+                obj.put("snapshot", sc.markdownSnapshot);
+                arr.put(obj);
+            }
+            sp.edit().putString("bookmarks_v2", arr.toString()).apply();
+        } catch (Exception ignored) {}
+    }
+
+    private void addCurrentChatToBookmarks() {
+        SavedChat sc = new SavedChat();
+        sc.title = currentRealTitle.isEmpty() ? "Gemini 深度分析对话" : currentRealTitle;
+        sc.url = currentRealUrl;
+        sc.date = new Date().toLocaleString();
+        sc.markdownSnapshot = buildRealMarkdownString();
+
+        List<SavedChat> list = loadPersistedBookmarks();
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).title.equals(sc.title)) {
+                list.remove(i);
+                break;
+            }
+        }
+        list.add(0, sc);
+        savePersistedBookmarks(list);
+        Toast.makeText(activity, "⭐ 成功添加书签: " + sc.title, Toast.LENGTH_SHORT).show();
+        renderBookmarksView();
     }
 
     private void showCreateFolderDialog() {
