@@ -1,5 +1,7 @@
 package com.voyager.gemini.enhancer;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -170,6 +172,16 @@ public class VoyagerOverlayView extends FrameLayout {
         switchTab("folders");
     }
 
+    private ValueAnimator fabEdgeAnimator = null;
+
+    @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        if (w > 0 && circularFab != null) {
+            post(() -> snapFabToEdge(circularFab));
+        }
+    }
+
     private FrameLayout createDraggableCircularFab() {
         FrameLayout fab = new FrameLayout(getContext());
 
@@ -194,7 +206,9 @@ public class VoyagerOverlayView extends FrameLayout {
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         mainHandler.removeCallbacks(dimFabRunnable);
-                        v.animate().cancel();
+                        if (fabEdgeAnimator != null && fabEdgeAnimator.isRunning()) {
+                            fabEdgeAnimator.cancel();
+                        }
                         v.setAlpha(1.0f);
                         touchDownX = event.getRawX();
                         touchDownY = event.getRawY();
@@ -202,6 +216,10 @@ public class VoyagerOverlayView extends FrameLayout {
                         dY = v.getY() - touchDownY;
                         isDragging = false;
                         v.animate().scaleX(1.12f).scaleY(1.12f).setDuration(100).start();
+                        // 阻止父视图与系统手势拦截拖拽
+                        if (v.getParent() != null) {
+                            v.getParent().requestDisallowInterceptTouchEvent(true);
+                        }
                         return true;
 
                     case MotionEvent.ACTION_MOVE:
@@ -212,9 +230,8 @@ public class VoyagerOverlayView extends FrameLayout {
                         }
 
                         if (isDragging) {
-                            View parent = (View) v.getParent();
-                            int parentWidth = (parent != null && parent.getWidth() > 0) ? parent.getWidth() : getResources().getDisplayMetrics().widthPixels;
-                            int parentHeight = (parent != null && parent.getHeight() > 0) ? parent.getHeight() : getResources().getDisplayMetrics().heightPixels;
+                            int parentWidth = getWidth() > 0 ? getWidth() : getResources().getDisplayMetrics().widthPixels;
+                            int parentHeight = getHeight() > 0 ? getHeight() : getResources().getDisplayMetrics().heightPixels;
                             int fabW = v.getWidth() > 0 ? v.getWidth() : dp(52);
                             int fabH = v.getHeight() > 0 ? v.getHeight() : dp(52);
 
@@ -245,27 +262,49 @@ public class VoyagerOverlayView extends FrameLayout {
 
     /**
      * 悬浮球松手后平滑磁吸自动贴靠屏幕最近边缘（左边缘或右边缘）
+     * 采用原生 ValueAnimator 驱动 setX，彻底避免 ViewPropertyAnimator 在部分机型上的冲突与无效问题
      */
     private void snapFabToEdge(final View v) {
-        v.animate().cancel();
-        View parent = (View) v.getParent();
-        int parentWidth = (parent != null && parent.getWidth() > 0) ? parent.getWidth() : getResources().getDisplayMetrics().widthPixels;
+        if (v == null) return;
+        if (fabEdgeAnimator != null && fabEdgeAnimator.isRunning()) {
+            fabEdgeAnimator.cancel();
+        }
+
+        v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(120).start();
+
+        int parentWidth = 0;
+        if (v.getParent() instanceof View) {
+            parentWidth = ((View) v.getParent()).getWidth();
+        }
+        if (parentWidth <= 0 && activity != null) {
+            parentWidth = activity.getWindow().getDecorView().getWidth();
+        }
+        if (parentWidth <= 0) {
+            parentWidth = getResources().getDisplayMetrics().widthPixels;
+        }
+
         int fabWidth = v.getWidth() > 0 ? v.getWidth() : dp(52);
+        float startX = v.getX();
+        float curCenterX = startX + fabWidth / 2f;
+        // 彻底贴紧边缘（保留 2dp 呼吸微缝隙，绝不悬停在屏幕内部）
+        final float targetX = (curCenterX < parentWidth / 2f) ? dp(2) : (float)(parentWidth - fabWidth - dp(2));
 
-        float curCenterX = v.getX() + fabWidth / 2f;
-        final float targetX = (curCenterX < parentWidth / 2f) ? dp(6) : (parentWidth - fabWidth - dp(6));
-
-        v.animate()
-                .scaleX(1.0f)
-                .scaleY(1.0f)
-                .x(targetX)
-                .setDuration(260)
-                .setInterpolator(new DecelerateInterpolator(1.8f))
-                .withEndAction(() -> {
-                    sp.edit().putFloat("fab_last_x", targetX).putFloat("fab_last_y", v.getY()).apply();
-                    scheduleFabDim();
-                })
-                .start();
+        fabEdgeAnimator = ValueAnimator.ofFloat(startX, targetX);
+        fabEdgeAnimator.setDuration(240);
+        fabEdgeAnimator.setInterpolator(new DecelerateInterpolator(1.8f));
+        fabEdgeAnimator.addUpdateListener(animation -> {
+            float val = (Float) animation.getAnimatedValue();
+            v.setX(val);
+        });
+        fabEdgeAnimator.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                v.setX(targetX);
+                sp.edit().putFloat("fab_last_x", targetX).putFloat("fab_last_y", v.getY()).apply();
+                scheduleFabDim();
+            }
+        });
+        fabEdgeAnimator.start();
     }
 
     private void scheduleFabDim() {
@@ -716,10 +755,18 @@ public class VoyagerOverlayView extends FrameLayout {
 
                     chatItem.addView(textCol, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
 
+                    // 快捷续聊按钮 (直接将原题填入 Gemini 提问框开始追问)
+                    TextView resumeBtn = new TextView(getContext());
+                    resumeBtn.setText("🚀");
+                    resumeBtn.setPadding(dp(6), dp(4), dp(4), dp(4));
+                    resumeBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    resumeBtn.setOnClickListener(v -> quickResumeIntoGemini(chat));
+                    chatItem.addView(resumeBtn);
+
                     // 离线快照查看按钮
                     TextView snapBtn = new TextView(getContext());
                     snapBtn.setText("📖");
-                    snapBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
+                    snapBtn.setPadding(dp(4), dp(4), dp(4), dp(4));
                     snapBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
                     snapBtn.setOnClickListener(v -> showSnapshotViewerDialog(chat));
                     chatItem.addView(snapBtn);
@@ -728,13 +775,13 @@ public class VoyagerOverlayView extends FrameLayout {
                     TextView delChatBtn = new TextView(getContext());
                     delChatBtn.setText("✕");
                     delChatBtn.setTextColor(getSecondaryTextColor());
-                    delChatBtn.setPadding(dp(6), dp(4), dp(4), dp(4));
+                    delChatBtn.setPadding(dp(4), dp(4), dp(6), dp(4));
                     delChatBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
                     delChatBtn.setOnClickListener(v -> confirmDeleteChat(folder, chat, allFolders));
                     chatItem.addView(delChatBtn);
 
-                    // 核心关键：点击条目直接进入并切换到相对应的对话中！
-                    chatItem.setOnClickListener(v -> enterAndSwitchConversation(chat));
+                    // 核心关键：点击条目直接打开该会话的完整问答记录看板与操作中心！
+                    chatItem.setOnClickListener(v -> renderConversationDetailView(chat, folder));
 
                     LinearLayout.LayoutParams itemLp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
                     itemLp.bottomMargin = dp(6);
@@ -749,27 +796,139 @@ public class VoyagerOverlayView extends FrameLayout {
         contentContainer.addView(card, lp);
     }
 
+    private void quickResumeIntoGemini(SavedChat chat) {
+        fillToGemini(chat.title);
+        closeDrawer();
+        Toast.makeText(activity, "✅ 已自动填入提问框，可直接向 Gemini 追问续聊！", Toast.LENGTH_SHORT).show();
+    }
+
     /**
-     * 核心关键：点击已分类的会话直接进入相对应的对话中
-     * 涵盖 4 重自适应驱动机制：
-     * 1. WebView DOM 与 Router 驱动：查找并点击 Gemini 侧边栏/历史会话中匹配的链接或直接导航 location.href；
-     * 2. 原生 View 树驱动：在宿主 DecorView 中递归寻找匹配标题的 View 并触发点击；
-     * 3. Deep Link 唤醒机制：针对含会话 ID 的 URL 触发包名为 com.google.android.apps.bard 的显式 Intent；
-     * 4. 浮动智能续接条 (Floating Resume HUD)：提供即时原题自动填入与离线快照唤起，永不迷失会话。
+     * 完整会话详情与续接看板：直接呈现该会话中记录的所有真实问答，
+     * 并提供【一键填入 Gemini 提问框续聊】、【唤起原生路由跳转】与【导出】操作
      */
+    private void renderConversationDetailView(final SavedChat chat, final FolderData parentFolder) {
+        contentContainer.removeAllViews();
+
+        // 顶栏：返回按钮 + 会话所属文件夹
+        LinearLayout header = new LinearLayout(getContext());
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(0, dp(4), 0, dp(10));
+
+        TextView backBtn = new TextView(getContext());
+        backBtn.setText("← 返回文件夹");
+        backBtn.setTextColor(Color.parseColor("#10A37F"));
+        backBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        backBtn.setTypeface(null, Typeface.BOLD);
+        backBtn.setPadding(0, dp(6), dp(12), dp(6));
+        backBtn.setOnClickListener(v -> renderFoldersView());
+        header.addView(backBtn);
+
+        TextView folderBadge = new TextView(getContext());
+        folderBadge.setText("[" + parentFolder.name + "]");
+        folderBadge.setTextColor(getSecondaryTextColor());
+        folderBadge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        header.addView(folderBadge, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+
+        contentContainer.addView(header);
+
+        // 标题卡片
+        LinearLayout titleCard = new LinearLayout(getContext());
+        titleCard.setOrientation(LinearLayout.VERTICAL);
+        titleCard.setPadding(dp(14), dp(12), dp(14), dp(12));
+        GradientDrawable tcGd = new GradientDrawable();
+        tcGd.setColor(getCardBgColor());
+        tcGd.setCornerRadius(dp(8));
+        tcGd.setStroke(dp(1), getCardBorderColor());
+        titleCard.setBackground(tcGd);
+
+        TextView titleTv = new TextView(getContext());
+        titleTv.setText("💬 " + chat.title);
+        titleTv.setTextColor(getPrimaryTextColor());
+        titleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        titleTv.setTypeface(null, Typeface.BOLD);
+        titleCard.addView(titleTv);
+
+        TextView timeTv = new TextView(getContext());
+        timeTv.setText("收录时间: " + chat.date);
+        timeTv.setTextColor(getSecondaryTextColor());
+        timeTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        timeTv.setPadding(0, dp(4), 0, 0);
+        titleCard.addView(timeTv);
+
+        contentContainer.addView(titleCard);
+
+        // 核心操作快捷入口
+        LinearLayout actionRow = new LinearLayout(getContext());
+        actionRow.setOrientation(LinearLayout.HORIZONTAL);
+        actionRow.setPadding(0, dp(8), 0, dp(12));
+
+        Button resumeChatBtn = createStyledButton("🚀 填入提问框续聊", "#10A37F", "#09090B");
+        resumeChatBtn.setLayoutParams(new LinearLayout.LayoutParams(0, dp(38), 1.0f));
+        resumeChatBtn.setOnClickListener(v -> quickResumeIntoGemini(chat));
+        actionRow.addView(resumeChatBtn);
+
+        View spacer = new View(getContext());
+        actionRow.addView(spacer, new LinearLayout.LayoutParams(dp(8), dp(1)));
+
+        Button nativeJumpBtn = createStyledButton("🔗 唤起官方跳转", isDarkTheme ? "#27272A" : "#E2E8F0", isDarkTheme ? "#FFFFFF" : "#0F172A");
+        nativeJumpBtn.setLayoutParams(new LinearLayout.LayoutParams(0, dp(38), 1.0f));
+        nativeJumpBtn.setOnClickListener(v -> enterAndSwitchConversation(chat));
+        actionRow.addView(nativeJumpBtn);
+
+        contentContainer.addView(actionRow);
+
+        // 真实问答记录内容流
+        TextView turnsTitle = createSectionTitle("📜 会话完整问答记录");
+        contentContainer.addView(turnsTitle);
+
+        String snapshot = chat.markdownSnapshot;
+        if (snapshot == null || snapshot.trim().isEmpty()) {
+            snapshot = "### 👤 提问\n" + chat.title + "\n\n### 🤖 Gemini 回答\n（该对话已记录，点击上方「🚀 填入提问框续聊」可直接在 Gemini 中继续追问）";
+        }
+
+        TextView bodyTv = new TextView(getContext());
+        bodyTv.setText(snapshot);
+        bodyTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        bodyTv.setLineSpacing(dp(3), 1.15f);
+        bodyTv.setTextColor(getPrimaryTextColor());
+        bodyTv.setPadding(dp(12), dp(12), dp(12), dp(12));
+
+        GradientDrawable bodyGd = new GradientDrawable();
+        bodyGd.setColor(isDarkTheme ? Color.parseColor("#17171C") : Color.parseColor("#F8FAFC"));
+        bodyGd.setCornerRadius(dp(8));
+        bodyGd.setStroke(dp(1), getCardBorderColor());
+        bodyTv.setBackground(bodyGd);
+
+        contentContainer.addView(bodyTv);
+
+        // 底部导出按钮
+        Button shareBtn = createStyledButton("📤 导出并分享此对话 (Markdown)", isDarkTheme ? "#26262B" : "#E2E8F0", isDarkTheme ? "#FFFFFF" : "#0F172A");
+        shareBtn.setOnClickListener(v -> {
+            Intent shareIntent = new Intent(Intent.ACTION_SEND);
+            shareIntent.setType("text/plain");
+            shareIntent.putExtra(Intent.EXTRA_SUBJECT, chat.title);
+            shareIntent.putExtra(Intent.EXTRA_TEXT, chat.markdownSnapshot);
+            activity.startActivity(Intent.createChooser(shareIntent, "导出对话"));
+        });
+        contentContainer.addView(shareBtn);
+    }
+
     /**
      * 核心关键：点击已分类的会话直接进入相对应的对话中
      * 涵盖 5 重自适应真实跳转驱动机制：
-     * 1. WebView DOM 与 Router 驱动：查找并点击 Gemini 网页版侧边栏/历史会话中匹配的链接或直接导航 location.href；
-     * 2. 原生当前视图树搜索与点击：直接在当前界面搜索匹配会话标题的控件并触发点击；
-     * 3. 原生侧边栏自动展开与检索 (关键突破)：若抽屉未展开，自动寻找并点击 Gemini 汉堡菜单按钮 (☰) 展开“最近聊天”列表，
-     *    在侧边栏中精确/模糊匹配会话标题并触发真实点击跳转；
-     * 4. Deep Link 显式 Intent 唤醒：针对含有效会话 ID 的 URL 唤醒 com.google.android.apps.bard 专属路由；
-     * 5. 浮动智能续接条 (Floating Resume HUD) 与完整快照阅读器：提供即时原题自动填入与离线历史回看。
+     * 1. 自动填入提问框并聚焦，确保即使路由未生效也能即刻对话；
+     * 2. WebView DOM 与 Router 驱动：查找并点击 Gemini 网页版侧边栏/历史会话中匹配的链接或直接导航 location.href；
+     * 3. 原生当前视图树搜索与点击：直接在当前界面搜索匹配会话标题的控件并触发点击；
+     * 4. 原生侧边栏自动展开与检索：自动寻找并点击 Gemini 汉堡菜单按钮 (☰) 展开“最近聊天”列表；
+     * 5. Deep Link 显式 Intent 唤醒与浮动智能续接条 (Floating Resume HUD)。
      */
     private void enterAndSwitchConversation(final SavedChat chat) {
         closeDrawer();
         Toast.makeText(activity, "⚡ 正在跳转至: " + chat.title, Toast.LENGTH_SHORT).show();
+
+        // 核心兜底保障：立即将原题填入提问框并聚焦，确保即使路由未生效也能即刻对话
+        fillToGemini(chat.title);
 
         // 尝试方式一: WebView DOM 自动化导航与路由跳转 (针对 Web / 混合渲染容器)
         WebView webView = findWebView(activity.getWindow().getDecorView());
