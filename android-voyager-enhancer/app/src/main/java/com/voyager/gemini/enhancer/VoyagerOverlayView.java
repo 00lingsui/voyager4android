@@ -186,33 +186,40 @@ public class VoyagerOverlayView extends FrameLayout {
         iconTv.setGravity(Gravity.CENTER);
         fab.addView(iconTv, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
+        final int dragThreshold = Math.min(touchSlop, dp(8));
+
         fab.setOnTouchListener(new OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         mainHandler.removeCallbacks(dimFabRunnable);
+                        v.animate().cancel();
                         v.setAlpha(1.0f);
                         touchDownX = event.getRawX();
                         touchDownY = event.getRawY();
                         dX = v.getX() - touchDownX;
                         dY = v.getY() - touchDownY;
                         isDragging = false;
-                        v.animate().scaleX(1.12f).scaleY(1.12f).setDuration(120).start();
+                        v.animate().scaleX(1.12f).scaleY(1.12f).setDuration(100).start();
                         return true;
 
                     case MotionEvent.ACTION_MOVE:
                         float curX = event.getRawX();
                         float curY = event.getRawY();
-                        if (Math.hypot(curX - touchDownX, curY - touchDownY) > touchSlop) {
+                        if (!isDragging && Math.hypot(curX - touchDownX, curY - touchDownY) > dragThreshold) {
                             isDragging = true;
                         }
 
                         if (isDragging) {
-                            int screenWidth = getResources().getDisplayMetrics().widthPixels;
-                            int screenHeight = getResources().getDisplayMetrics().heightPixels;
-                            float newX = Math.max(0, Math.min(curX + dX, screenWidth - v.getWidth()));
-                            float newY = Math.max(dp(30), Math.min(curY + dY, screenHeight - v.getHeight() - dp(40)));
+                            View parent = (View) v.getParent();
+                            int parentWidth = (parent != null && parent.getWidth() > 0) ? parent.getWidth() : getResources().getDisplayMetrics().widthPixels;
+                            int parentHeight = (parent != null && parent.getHeight() > 0) ? parent.getHeight() : getResources().getDisplayMetrics().heightPixels;
+                            int fabW = v.getWidth() > 0 ? v.getWidth() : dp(52);
+                            int fabH = v.getHeight() > 0 ? v.getHeight() : dp(52);
+
+                            float newX = Math.max(0, Math.min(curX + dX, parentWidth - fabW));
+                            float newY = Math.max(dp(30), Math.min(curY + dY, parentHeight - fabH - dp(40)));
                             v.setX(newX);
                             v.setY(newY);
                         }
@@ -220,18 +227,13 @@ public class VoyagerOverlayView extends FrameLayout {
 
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
-                        v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(120).start();
                         if (!isDragging) {
+                            v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(120).start();
                             openDrawer();
+                            scheduleFabDim();
                         } else {
-                            int screenWidth = getResources().getDisplayMetrics().widthPixels;
-                            float curCenterX = v.getX() + v.getWidth() / 2f;
-                            float targetX = (curCenterX < screenWidth / 2f) ? dp(6) : (screenWidth - v.getWidth() - dp(6));
-                            v.animate().x(targetX).setDuration(220).setInterpolator(new DecelerateInterpolator()).start();
-
-                            sp.edit().putFloat("fab_last_x", targetX).putFloat("fab_last_y", v.getY()).apply();
+                            snapFabToEdge(v);
                         }
-                        scheduleFabDim();
                         return true;
                 }
                 return false;
@@ -239,6 +241,31 @@ public class VoyagerOverlayView extends FrameLayout {
         });
 
         return fab;
+    }
+
+    /**
+     * 悬浮球松手后平滑磁吸自动贴靠屏幕最近边缘（左边缘或右边缘）
+     */
+    private void snapFabToEdge(final View v) {
+        v.animate().cancel();
+        View parent = (View) v.getParent();
+        int parentWidth = (parent != null && parent.getWidth() > 0) ? parent.getWidth() : getResources().getDisplayMetrics().widthPixels;
+        int fabWidth = v.getWidth() > 0 ? v.getWidth() : dp(52);
+
+        float curCenterX = v.getX() + fabWidth / 2f;
+        final float targetX = (curCenterX < parentWidth / 2f) ? dp(6) : (parentWidth - fabWidth - dp(6));
+
+        v.animate()
+                .scaleX(1.0f)
+                .scaleY(1.0f)
+                .x(targetX)
+                .setDuration(260)
+                .setInterpolator(new DecelerateInterpolator(1.8f))
+                .withEndAction(() -> {
+                    sp.edit().putFloat("fab_last_x", targetX).putFloat("fab_last_y", v.getY()).apply();
+                    scheduleFabDim();
+                })
+                .start();
     }
 
     private void scheduleFabDim() {
@@ -730,11 +757,21 @@ public class VoyagerOverlayView extends FrameLayout {
      * 3. Deep Link 唤醒机制：针对含会话 ID 的 URL 触发包名为 com.google.android.apps.bard 的显式 Intent；
      * 4. 浮动智能续接条 (Floating Resume HUD)：提供即时原题自动填入与离线快照唤起，永不迷失会话。
      */
-    private void enterAndSwitchConversation(SavedChat chat) {
+    /**
+     * 核心关键：点击已分类的会话直接进入相对应的对话中
+     * 涵盖 5 重自适应真实跳转驱动机制：
+     * 1. WebView DOM 与 Router 驱动：查找并点击 Gemini 网页版侧边栏/历史会话中匹配的链接或直接导航 location.href；
+     * 2. 原生当前视图树搜索与点击：直接在当前界面搜索匹配会话标题的控件并触发点击；
+     * 3. 原生侧边栏自动展开与检索 (关键突破)：若抽屉未展开，自动寻找并点击 Gemini 汉堡菜单按钮 (☰) 展开“最近聊天”列表，
+     *    在侧边栏中精确/模糊匹配会话标题并触发真实点击跳转；
+     * 4. Deep Link 显式 Intent 唤醒：针对含有效会话 ID 的 URL 唤醒 com.google.android.apps.bard 专属路由；
+     * 5. 浮动智能续接条 (Floating Resume HUD) 与完整快照阅读器：提供即时原题自动填入与离线历史回看。
+     */
+    private void enterAndSwitchConversation(final SavedChat chat) {
         closeDrawer();
-        Toast.makeText(activity, "正在进入对话: " + chat.title, Toast.LENGTH_SHORT).show();
+        Toast.makeText(activity, "⚡ 正在跳转至: " + chat.title, Toast.LENGTH_SHORT).show();
 
-        // 尝试方式一: WebView DOM 自动化导航与路由跳转
+        // 尝试方式一: WebView DOM 自动化导航与路由跳转 (针对 Web / 混合渲染容器)
         WebView webView = findWebView(activity.getWindow().getDecorView());
         if (webView != null) {
             String safeUrl = (chat.url == null) ? "" : chat.url;
@@ -766,25 +803,126 @@ public class VoyagerOverlayView extends FrameLayout {
             }
         }
 
-        // 尝试方式二: 原生 View 树搜索与自动点击历史会话项 (Gemini 原生 Drawer / List)
-        View matchView = findViewByPartialText(activity.getWindow().getDecorView(), chat.title);
+        // 尝试方式二: 直接在原生当前视图树中搜索目标会话条目
+        View matchView = findConversationViewInHierarchy(activity.getWindow().getDecorView(), chat.title);
         if (matchView != null) {
             View clickable = getClickableAncestorOrSelf(matchView);
             clickable.performClick();
+            Toast.makeText(activity, "✅ 已切换至「" + chat.title + "」", Toast.LENGTH_SHORT).show();
+            showFloatingResumeHud(chat);
+            return;
         }
 
-        // 尝试方式三: Android Deep Link Intent
-        if (chat.url != null && chat.url.contains("/app/") && chat.url.length() > 30) {
-            try {
-                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(chat.url));
-                intent.setPackage("com.google.android.apps.bard");
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-                activity.startActivity(intent);
-            } catch (Exception ignored) {}
+        // 尝试方式三 (核心机制突破): 若未直接找到，通常是因为 Gemini 原生“最近聊天”抽屉处于收起状态。
+        // 自动检索并模拟点击 Gemini 顶栏左侧的汉堡菜单按钮 (☰)，展开最近聊天列表！
+        View menuBtn = findGeminiMenuButton(activity.getWindow().getDecorView());
+        if (menuBtn != null) {
+            menuBtn.performClick();
+            // 等待 Gemini 侧边栏滑出与列表渲染（约 260ms）
+            mainHandler.postDelayed(() -> {
+                View afterOpenView = findConversationViewInHierarchy(activity.getWindow().getDecorView(), chat.title);
+                if (afterOpenView != null) {
+                    View clickable = getClickableAncestorOrSelf(afterOpenView);
+                    clickable.performClick();
+                    Toast.makeText(activity, "✅ 已切换至「" + chat.title + "」", Toast.LENGTH_SHORT).show();
+                } else {
+                    // 若最近列表中未找到（如历史较久远），提供快照阅读与一键提问
+                    showFloatingResumeHud(chat);
+                }
+            }, 260);
+        } else {
+            // 尝试方式四: Android Deep Link Intent
+            if (chat.url != null && chat.url.contains("/app/") && chat.url.length() > 30) {
+                try {
+                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(chat.url));
+                    intent.setPackage("com.google.android.apps.bard");
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                    activity.startActivity(intent);
+                } catch (Exception ignored) {}
+            }
+            // 尝试方式五: 弹出浮动智能续接横幅 (Floating Resume HUD)
+            showFloatingResumeHud(chat);
+        }
+    }
+
+    /**
+     * 智能识别并定位 Gemini 原生界面的侧边栏汉堡菜单按钮 (☰)
+     */
+    private View findGeminiMenuButton(View root) {
+        if (root == null || root.getVisibility() != View.VISIBLE) return null;
+        if ("VOYAGER_OVERLAY_ROOT".equals(root.getTag()) || root == circularFab || root == drawerLayout) return null;
+
+        CharSequence cd = root.getContentDescription();
+        if (cd != null) {
+            String desc = cd.toString().toLowerCase();
+            if (desc.contains("menu") || desc.contains("菜单") || desc.contains("nav") ||
+                desc.contains("drawer") || desc.contains("侧边") || desc.contains("导航") ||
+                desc.contains("open") || desc.contains("打开") || desc.contains("主菜单")) {
+                int[] loc = new int[2];
+                root.getLocationOnScreen(loc);
+                if (loc[1] < dp(180)) {
+                    return root;
+                }
+            }
         }
 
-        // 核心辅助: 弹出浮动智能续接横幅 (Floating Resume HUD)
-        showFloatingResumeHud(chat);
+        // 识别左上角的可点击图元 (汉堡图标)
+        if ((root instanceof android.widget.ImageView || root instanceof android.widget.ImageButton) && root.isClickable()) {
+            int[] loc = new int[2];
+            root.getLocationOnScreen(loc);
+            if (loc[0] < dp(80) && loc[1] < dp(140) && loc[1] > 0) {
+                return root;
+            }
+        }
+
+        if (root instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) root;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                View found = findGeminiMenuButton(vg.getChildAt(i));
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 在视图树中递归寻找与目标会话标题匹配的会话项 (支持模糊截断匹配)
+     */
+    private View findConversationViewInHierarchy(View root, String title) {
+        if (root == null || root.getVisibility() != View.VISIBLE || title == null || title.trim().isEmpty()) return null;
+        if ("VOYAGER_OVERLAY_ROOT".equals(root.getTag()) || root == circularFab || root == drawerLayout) return null;
+
+        String query = title.trim();
+        if (query.startsWith("📄") || query.startsWith("💬")) {
+            query = query.substring(1).trim();
+        }
+
+        if (root instanceof TextView && !(root instanceof EditText)) {
+            CharSequence cs = ((TextView) root).getText();
+            if (cs != null) {
+                String text = cs.toString().trim();
+                if (text.length() >= 2) {
+                    if (text.equalsIgnoreCase(query) || text.contains(query) || query.contains(text)) {
+                        return root;
+                    }
+                    if (query.length() >= 5 && text.length() >= 5) {
+                        String prefix = query.substring(0, Math.min(6, query.length()));
+                        if (text.startsWith(prefix)) {
+                            return root;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (root instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) root;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                View found = findConversationViewInHierarchy(vg.getChildAt(i), title);
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     /**
@@ -831,7 +969,7 @@ public class VoyagerOverlayView extends FrameLayout {
 
             // 查看快照按钮
             TextView snapBtn = new TextView(activity);
-            snapBtn.setText(" 📖 快照");
+            snapBtn.setText(" 📖 历史记录");
             snapBtn.setTextColor(Color.parseColor("#38BDF8"));
             snapBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
             snapBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
@@ -862,28 +1000,6 @@ public class VoyagerOverlayView extends FrameLayout {
                 } catch (Exception ignored) {}
             }, 8000);
         });
-    }
-
-    private View findViewByPartialText(View root, String text) {
-        if (root == null || root.getVisibility() != View.VISIBLE || text == null || text.trim().isEmpty()) return null;
-        if ("VOYAGER_OVERLAY_ROOT".equals(root.getTag()) || root == circularFab || root == drawerLayout) return null;
-        if (root instanceof TextView && !(root instanceof EditText)) {
-            CharSequence cs = ((TextView) root).getText();
-            if (cs != null) {
-                String str = cs.toString().trim();
-                if (str.length() >= 3 && (str.contains(text) || text.contains(str))) {
-                    return root;
-                }
-            }
-        }
-        if (root instanceof ViewGroup) {
-            ViewGroup vg = (ViewGroup) root;
-            for (int i = 0; i < vg.getChildCount(); i++) {
-                View found = findViewByPartialText(vg.getChildAt(i), text);
-                if (found != null) return found;
-            }
-        }
-        return null;
     }
 
     private View getClickableAncestorOrSelf(View view) {
