@@ -1,6 +1,12 @@
 # Voyager for Gemini (Android Xposed 增强模块)
 
-> 专为 Android 端 Gemini打造的沉浸式功能增强工具，解锁高效对话管理与极致交互体验。
+> 专为 Android 端 Gemini 打造的沉浸式功能增强工具，解锁高效对话管理与极致交互体验。
+
+## 💡 灵感来源与参考
+
+本项目灵感来自于著名的 Web 端 AI 增强插件套件项目： 👉 [**voyager-crew/voyager**](https://github.com/voyager-crew/voyager)
+
+感谢原项目在对话管理、时间线导航及公式提取等核心交互理念上的启发。本模块致力于将 `voyager` 在 Web 端的优秀体验移植并重构至 **Android 原生 App + Xposed/LSPosed** 环境下。
 
 ## 🌟 核心功能概览
 
