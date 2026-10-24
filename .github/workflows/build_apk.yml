@@ -58,6 +58,11 @@ jobs:
           find . -name "VoyagerOverlayView.java" -exec sed -i 's/sp.getString("folders",.*/sp.getString("folders", "[]");/' {} + 2>/dev/null || true
           find . -name "VoyagerOverlayView.java" -exec sed -i 's/sp.getString("prompts",.*/sp.getString("prompts", "[]");/' {} + 2>/dev/null || true
 
+          # 确保全局唯一的固定签名密钥存在，保持 APK 签名永不改变（支持无缝覆盖更新，无需卸载旧版本）
+          if [ ! -f "app/voyager-release.jks" ]; then
+            find . -name "voyager-release.jks" -exec cp {} app/voyager-release.jks \; 2>/dev/null || true
+          fi
+
           if [ -f "./gradlew" ]; then
             sed -i 's/\r$//' ./gradlew || true
             chmod +x ./gradlew || true

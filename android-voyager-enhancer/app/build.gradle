@@ -14,8 +14,23 @@ android {
         versionName "1.0"
     }
 
-    buildTypes {
+    signingConfigs {
         release {
+            storeFile file('voyager-release.jks')
+            storePassword 'voyager123'
+            keyAlias 'voyager'
+            keyPassword 'voyager123'
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.release
+        }
+        release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }

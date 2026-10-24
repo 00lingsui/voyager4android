@@ -97,6 +97,9 @@ public class VoyagerOverlayView extends FrameLayout {
         public View nativeViewRef; // 关联的原生 View 节点
     }
 
+    // 文件夹树状折叠/展开状态记忆 (类似 PC 端 Voyager 侧边栏树形体验)
+    private final Set<String> expandedFolderNames = new HashSet<>();
+
     public VoyagerOverlayView(Activity activity) {
         super(activity);
         this.activity = activity;
@@ -104,6 +107,9 @@ public class VoyagerOverlayView extends FrameLayout {
         this.touchSlop = ViewConfiguration.get(activity).getScaledTouchSlop();
         checkThemeMode();
         initViews();
+        // 默认将默认文件夹展开
+        expandedFolderNames.add("💼 核心工作与架构规划");
+        expandedFolderNames.add("💻 编程与技术调研");
         // 首次挂载时扫描一次
         scanAndExtractRealChat(null);
     }
@@ -387,8 +393,13 @@ public class VoyagerOverlayView extends FrameLayout {
         WebView webView = findWebView(activity.getWindow().getDecorView());
         if (webView != null) {
             String js = "(function(){\n" +
-                    "  var title = document.title || 'Gemini 对话';\n" +
+                    "  var title = '';\n" +
+                    "  var titleEl = document.querySelector('.conversation-title, [data-test-id=\"conversation-title\"], h1, .title-text');\n" +
+                    "  if (titleEl && titleEl.innerText) { title = titleEl.innerText.trim(); }\n" +
+                    "  if (!title) { title = document.title || 'Gemini 对话'; }\n" +
                     "  var url = window.location.href;\n" +
+                    "  var activeLink = document.querySelector('a[aria-current=\"page\"], a.selected, [data-is-selected=\"true\"] a, a[class*=\"active\"], a[href*=\"/app/\"]');\n" +
+                    "  if (activeLink && activeLink.href && activeLink.href.length > url.length) { url = activeLink.href; }\n" +
                     "  var turns = [];\n" +
                     "  var qElements = document.querySelectorAll('user-query, .query-text, div[class*=\"user-query\"], .user-query-container, [data-message-author=\"user\"]');\n" +
                     "  var aElements = document.querySelectorAll('model-response, .response-content, div[class*=\"model-response\"], message-content, [data-message-author=\"model\"]');\n" +
@@ -532,14 +543,14 @@ public class VoyagerOverlayView extends FrameLayout {
         }
     }
 
-    // ==================== 1. 文件夹系统 (真正归档完整会话快照 + 真实点击预览/恢复/跳转) ====================
+    // ==================== 1. 文件夹系统 (真正树状分类 + 点击直接进入对应会话 + 离线快照 + 智能续接) ====================
     private void renderFoldersView() {
-        TextView intro = createSectionTitle("📂 多级分类文件夹 (真正归档与恢复历史会话)");
+        TextView intro = createSectionTitle("📂 多级分类文件夹 (点击条目直接进入对应会话)");
         contentContainer.addView(intro);
 
         List<FolderData> folders = loadPersistedFolders();
         for (FolderData f : folders) {
-            buildPersistedFolderCard(f);
+            buildPersistedFolderCard(f, folders);
         }
 
         Button addFolderBtn = createStyledButton("+ 新建分类文件夹", "#10A37F", "#09090B");
@@ -552,20 +563,30 @@ public class VoyagerOverlayView extends FrameLayout {
         contentContainer.addView(saveChatBtn);
     }
 
-    private void buildPersistedFolderCard(FolderData folder) {
-        LinearLayout row = new LinearLayout(getContext());
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(dp(12), dp(10), dp(12), dp(10));
+    private void buildPersistedFolderCard(FolderData folder, List<FolderData> allFolders) {
+        final boolean isExpanded = expandedFolderNames.contains(folder.name);
+
+        LinearLayout card = new LinearLayout(getContext());
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
 
         GradientDrawable gd = new GradientDrawable();
         gd.setColor(getCardBgColor());
         gd.setCornerRadius(dp(8));
         gd.setStroke(dp(1), getCardBorderColor());
-        row.setBackground(gd);
+        card.setBackground(gd);
 
+        // 文件夹标题栏（包含展开箭头、颜色标、名称、篇数、直接存入按钮、删除文件夹按钮）
         LinearLayout topBar = new LinearLayout(getContext());
         topBar.setOrientation(LinearLayout.HORIZONTAL);
         topBar.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView arrowTv = new TextView(getContext());
+        arrowTv.setText(isExpanded ? "▼ " : "▶ ");
+        arrowTv.setTextColor(Color.parseColor("#10A37F"));
+        arrowTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        arrowTv.setTypeface(null, Typeface.BOLD);
+        topBar.addView(arrowTv);
 
         View dot = new View(getContext());
         GradientDrawable dotGd = new GradientDrawable();
@@ -585,22 +606,310 @@ public class VoyagerOverlayView extends FrameLayout {
         countBadge.setText(String.valueOf(folder.savedChats.size()) + " 篇");
         countBadge.setTextColor(getSecondaryTextColor());
         countBadge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        countBadge.setPadding(dp(4), 0, dp(6), 0);
         topBar.addView(countBadge);
 
-        row.addView(topBar);
+        // 快捷添加按钮：直接将当前对话收录进此文件夹
+        TextView addChatBtn = new TextView(getContext());
+        addChatBtn.setText(" ＋ ");
+        addChatBtn.setTextColor(Color.parseColor("#10A37F"));
+        addChatBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        addChatBtn.setTypeface(null, Typeface.BOLD);
+        addChatBtn.setOnClickListener(v -> saveChatToSpecificFolder(folder, allFolders));
+        topBar.addView(addChatBtn);
 
-        // 点击展开查看真实保存的会话列表，点击真正执行跳转加载与快照查看！
-        row.setOnClickListener(v -> {
-            if (folder.savedChats.isEmpty()) {
-                Toast.makeText(activity, "文件夹 [" + folder.name + "] 暂无会话，请点击下方「收录当前对话」存入", Toast.LENGTH_SHORT).show();
+        // 删除文件夹按钮
+        TextView delFolderBtn = new TextView(getContext());
+        delFolderBtn.setText(" 🗑️");
+        delFolderBtn.setTextColor(getSecondaryTextColor());
+        delFolderBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        delFolderBtn.setOnClickListener(v -> confirmDeleteFolder(folder, allFolders));
+        topBar.addView(delFolderBtn);
+
+        // 点击标题栏切换展开/折叠
+        topBar.setOnClickListener(v -> {
+            if (isExpanded) {
+                expandedFolderNames.remove(folder.name);
             } else {
-                showSavedChatsDialog(folder);
+                expandedFolderNames.add(folder.name);
             }
+            renderFoldersView();
         });
+
+        card.addView(topBar);
+
+        // 展开后的会话列表 (类似 PC 端 Voyager 侧边栏树形体验)
+        if (isExpanded) {
+            LinearLayout childContainer = new LinearLayout(getContext());
+            childContainer.setOrientation(LinearLayout.VERTICAL);
+            childContainer.setPadding(dp(12), dp(8), dp(0), dp(4));
+
+            if (folder.savedChats.isEmpty()) {
+                TextView emptyTv = new TextView(getContext());
+                emptyTv.setText("（暂无会话，点击右侧 ＋ 可直接将当前会话存入）");
+                emptyTv.setTextColor(getSecondaryTextColor());
+                emptyTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+                emptyTv.setPadding(dp(4), dp(4), dp(4), dp(4));
+                childContainer.addView(emptyTv);
+            } else {
+                for (final SavedChat chat : folder.savedChats) {
+                    LinearLayout chatItem = new LinearLayout(getContext());
+                    chatItem.setOrientation(LinearLayout.HORIZONTAL);
+                    chatItem.setGravity(Gravity.CENTER_VERTICAL);
+                    chatItem.setPadding(dp(10), dp(8), dp(8), dp(8));
+
+                    GradientDrawable itemGd = new GradientDrawable();
+                    itemGd.setColor(isDarkTheme ? Color.parseColor("#222228") : Color.parseColor("#F1F5F9"));
+                    itemGd.setCornerRadius(dp(6));
+                    itemGd.setStroke(dp(1), isDarkTheme ? Color.parseColor("#2C2C34") : Color.parseColor("#E2E8F0"));
+                    chatItem.setBackground(itemGd);
+
+                    TextView chatIcon = new TextView(getContext());
+                    chatIcon.setText("💬 ");
+                    chatIcon.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    chatItem.addView(chatIcon);
+
+                    LinearLayout textCol = new LinearLayout(getContext());
+                    textCol.setOrientation(LinearLayout.VERTICAL);
+
+                    TextView chatTitleTv = new TextView(getContext());
+                    chatTitleTv.setText(chat.title);
+                    chatTitleTv.setTextColor(getPrimaryTextColor());
+                    chatTitleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    chatTitleTv.setTypeface(null, Typeface.BOLD);
+                    chatTitleTv.setSingleLine(true);
+                    chatTitleTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                    textCol.addView(chatTitleTv);
+
+                    TextView chatDateTv = new TextView(getContext());
+                    chatDateTv.setText(chat.date);
+                    chatDateTv.setTextColor(getSecondaryTextColor());
+                    chatDateTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+                    textCol.addView(chatDateTv);
+
+                    chatItem.addView(textCol, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+
+                    // 离线快照查看按钮
+                    TextView snapBtn = new TextView(getContext());
+                    snapBtn.setText("📖");
+                    snapBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
+                    snapBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    snapBtn.setOnClickListener(v -> showSnapshotViewerDialog(chat));
+                    chatItem.addView(snapBtn);
+
+                    // 移出会话按钮
+                    TextView delChatBtn = new TextView(getContext());
+                    delChatBtn.setText("✕");
+                    delChatBtn.setTextColor(getSecondaryTextColor());
+                    delChatBtn.setPadding(dp(6), dp(4), dp(4), dp(4));
+                    delChatBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                    delChatBtn.setOnClickListener(v -> confirmDeleteChat(folder, chat, allFolders));
+                    chatItem.addView(delChatBtn);
+
+                    // 核心关键：点击条目直接进入并切换到相对应的对话中！
+                    chatItem.setOnClickListener(v -> enterAndSwitchConversation(chat));
+
+                    LinearLayout.LayoutParams itemLp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+                    itemLp.bottomMargin = dp(6);
+                    childContainer.addView(chatItem, itemLp);
+                }
+            }
+            card.addView(childContainer);
+        }
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
         lp.bottomMargin = dp(8);
-        contentContainer.addView(row, lp);
+        contentContainer.addView(card, lp);
+    }
+
+    /**
+     * 核心关键：点击已分类的会话直接进入相对应的对话中
+     * 涵盖 4 重自适应驱动机制：
+     * 1. WebView DOM 与 Router 驱动：查找并点击 Gemini 侧边栏/历史会话中匹配的链接或直接导航 location.href；
+     * 2. 原生 View 树驱动：在宿主 DecorView 中递归寻找匹配标题的 View 并触发点击；
+     * 3. Deep Link 唤醒机制：针对含会话 ID 的 URL 触发包名为 com.google.android.apps.bard 的显式 Intent；
+     * 4. 浮动智能续接条 (Floating Resume HUD)：提供即时原题自动填入与离线快照唤起，永不迷失会话。
+     */
+    private void enterAndSwitchConversation(SavedChat chat) {
+        closeDrawer();
+        Toast.makeText(activity, "正在进入对话: " + chat.title, Toast.LENGTH_SHORT).show();
+
+        // 尝试方式一: WebView DOM 自动化导航与路由跳转
+        WebView webView = findWebView(activity.getWindow().getDecorView());
+        if (webView != null) {
+            String safeUrl = (chat.url == null) ? "" : chat.url;
+            String safeTitle = (chat.title == null) ? "" : chat.title;
+            String js = "(function() {\n" +
+                    "  var targetUrl = " + JSONObject.quote(safeUrl) + ";\n" +
+                    "  var targetTitle = " + JSONObject.quote(safeTitle) + ";\n" +
+                    "  var clicked = false;\n" +
+                    "  var links = document.querySelectorAll('a[href*=\"/app/\"], [data-test-id=\"conversation-title\"], div[role=\"button\"], .conversation-title');\n" +
+                    "  for (var i = 0; i < links.length; i++) {\n" +
+                    "    var el = links[i];\n" +
+                    "    var href = el.getAttribute('href') || el.href || '';\n" +
+                    "    var text = (el.innerText || '').trim();\n" +
+                    "    if ((targetUrl.length > 25 && href && targetUrl.indexOf(href) !== -1) ||\n" +
+                    "        (targetTitle.length > 2 && text && (text.indexOf(targetTitle) !== -1 || targetTitle.indexOf(text) !== -1))) {\n" +
+                    "      el.click();\n" +
+                    "      clicked = true;\n" +
+                    "      break;\n" +
+                    "    }\n" +
+                    "  }\n" +
+                    "  if (!clicked && targetUrl && targetUrl.indexOf('gemini.google.com') !== -1 && targetUrl.length > 28) {\n" +
+                    "    window.location.href = targetUrl;\n" +
+                    "  }\n" +
+                    "  return clicked;\n" +
+                    "})();";
+            webView.evaluateJavascript(js, null);
+            if (safeUrl.length() > 28 && safeUrl.startsWith("http")) {
+                webView.loadUrl(safeUrl);
+            }
+        }
+
+        // 尝试方式二: 原生 View 树搜索与自动点击历史会话项 (Gemini 原生 Drawer / List)
+        View matchView = findViewByPartialText(activity.getWindow().getDecorView(), chat.title);
+        if (matchView != null) {
+            View clickable = getClickableAncestorOrSelf(matchView);
+            clickable.performClick();
+        }
+
+        // 尝试方式三: Android Deep Link Intent
+        if (chat.url != null && chat.url.contains("/app/") && chat.url.length() > 30) {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(chat.url));
+                intent.setPackage("com.google.android.apps.bard");
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                activity.startActivity(intent);
+            } catch (Exception ignored) {}
+        }
+
+        // 核心辅助: 弹出浮动智能续接横幅 (Floating Resume HUD)
+        showFloatingResumeHud(chat);
+    }
+
+    /**
+     * 浮动智能续接条：进入会话后在屏幕顶层展现快捷小胶囊，支持一键填入输入框续聊和离线快照查看
+     */
+    private void showFloatingResumeHud(final SavedChat chat) {
+        if (activity == null || activity.isFinishing()) return;
+        activity.runOnUiThread(() -> {
+            ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
+            View oldHud = decor.findViewWithTag("VOYAGER_RESUME_HUD");
+            if (oldHud != null) decor.removeView(oldHud);
+
+            LinearLayout hud = new LinearLayout(activity);
+            hud.setTag("VOYAGER_RESUME_HUD");
+            hud.setOrientation(LinearLayout.HORIZONTAL);
+            hud.setGravity(Gravity.CENTER_VERTICAL);
+            hud.setPadding(dp(14), dp(8), dp(10), dp(8));
+
+            GradientDrawable gd = new GradientDrawable();
+            gd.setColor(isDarkTheme ? Color.parseColor("#1E293B") : Color.parseColor("#0F172A"));
+            gd.setCornerRadius(dp(22));
+            gd.setStroke(dp(1), Color.parseColor("#10A37F"));
+            hud.setBackground(gd);
+
+            TextView titleTv = new TextView(activity);
+            String displayTitle = chat.title.length() > 14 ? chat.title.substring(0, 14) + "..." : chat.title;
+            titleTv.setText("💬 " + displayTitle);
+            titleTv.setTextColor(Color.WHITE);
+            titleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            titleTv.setTypeface(null, Typeface.BOLD);
+            hud.addView(titleTv);
+
+            // 续聊填入按钮
+            TextView fillBtn = new TextView(activity);
+            fillBtn.setText(" 💡 填入原题");
+            fillBtn.setTextColor(Color.parseColor("#10A37F"));
+            fillBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            fillBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
+            fillBtn.setOnClickListener(v -> {
+                fillToGemini(chat.title);
+                decor.removeView(hud);
+            });
+            hud.addView(fillBtn);
+
+            // 查看快照按钮
+            TextView snapBtn = new TextView(activity);
+            snapBtn.setText(" 📖 快照");
+            snapBtn.setTextColor(Color.parseColor("#38BDF8"));
+            snapBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            snapBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
+            snapBtn.setOnClickListener(v -> showSnapshotViewerDialog(chat));
+            hud.addView(snapBtn);
+
+            // 关闭按钮
+            TextView closeHudBtn = new TextView(activity);
+            closeHudBtn.setText(" ✕");
+            closeHudBtn.setTextColor(Color.parseColor("#94A3B8"));
+            closeHudBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            closeHudBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
+            closeHudBtn.setOnClickListener(v -> decor.removeView(hud));
+            hud.addView(closeHudBtn);
+
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP | Gravity.CENTER_HORIZONTAL
+            );
+            lp.topMargin = dp(45);
+            decor.addView(hud, lp);
+
+            // 8 秒后自动淡化移除
+            mainHandler.postDelayed(() -> {
+                try {
+                    decor.removeView(hud);
+                } catch (Exception ignored) {}
+            }, 8000);
+        });
+    }
+
+    private View findViewByPartialText(View root, String text) {
+        if (root == null || root.getVisibility() != View.VISIBLE || text == null || text.trim().isEmpty()) return null;
+        if ("VOYAGER_OVERLAY_ROOT".equals(root.getTag()) || root == circularFab || root == drawerLayout) return null;
+        if (root instanceof TextView && !(root instanceof EditText)) {
+            CharSequence cs = ((TextView) root).getText();
+            if (cs != null) {
+                String str = cs.toString().trim();
+                if (str.length() >= 3 && (str.contains(text) || text.contains(str))) {
+                    return root;
+                }
+            }
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) root;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                View found = findViewByPartialText(vg.getChildAt(i), text);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private View getClickableAncestorOrSelf(View view) {
+        View cur = view;
+        while (cur != null) {
+            if (cur.isClickable()) return cur;
+            if (cur.getParent() instanceof View) {
+                cur = (View) cur.getParent();
+            } else {
+                break;
+            }
+        }
+        return view;
+    }
+
+    private void saveChatToSpecificFolder(FolderData target, List<FolderData> allFolders) {
+        SavedChat chat = new SavedChat();
+        chat.title = currentRealTitle.isEmpty() ? "Gemini 深度分析对话" : currentRealTitle;
+        chat.url = currentRealUrl;
+        chat.date = new Date().toLocaleString();
+        chat.markdownSnapshot = buildRealMarkdownString();
+        target.savedChats.add(chat);
+        expandedFolderNames.add(target.name);
+        savePersistedFolders(allFolders);
+        Toast.makeText(activity, "✅ 已收录当前对话至 [" + target.name + "]", Toast.LENGTH_SHORT).show();
+        renderFoldersView();
     }
 
     private void showSaveCurrentChatDialog(List<FolderData> folders) {
@@ -616,68 +925,32 @@ public class VoyagerOverlayView extends FrameLayout {
         builder.setTitle("选择要归档到的文件夹");
         builder.setItems(folderNames, (dialog, which) -> {
             FolderData target = folders.get(which);
-            SavedChat chat = new SavedChat();
-            chat.title = currentRealTitle.isEmpty() ? "Gemini 深度分析对话" : currentRealTitle;
-            chat.url = currentRealUrl;
-            chat.date = new Date().toLocaleString();
-            chat.markdownSnapshot = buildRealMarkdownString(); // 真正将全部问答快照存入
-            target.savedChats.add(chat);
-            savePersistedFolders(folders);
-            Toast.makeText(activity, "✅ 成功收录当前 " + currentTurns.size() + " 轮对话至 [" + target.name + "]", Toast.LENGTH_SHORT).show();
-            renderFoldersView();
+            saveChatToSpecificFolder(target, folders);
         });
         builder.setNegativeButton("取消", null);
         builder.show();
     }
 
-    private void showSavedChatsDialog(FolderData folder) {
-        String[] titles = new String[folder.savedChats.size()];
-        for (int i = 0; i < folder.savedChats.size(); i++) {
-            SavedChat sc = folder.savedChats.get(i);
-            titles[i] = "📄 " + sc.title + "\n   (" + sc.date + ")";
-        }
-
+    private void confirmDeleteFolder(FolderData folder, List<FolderData> allFolders) {
         AlertDialog.Builder b = new AlertDialog.Builder(activity);
-        b.setTitle("【" + folder.name + "】归档会话");
-        b.setItems(titles, (dialog, which) -> {
-            SavedChat selected = folder.savedChats.get(which);
-            showChatActionDialog(selected);
+        b.setTitle("删除分类文件夹");
+        b.setMessage("确定删除文件夹 [" + folder.name + "] 及其收录的 " + folder.savedChats.size() + " 篇会话吗？");
+        b.setPositiveButton("删除", (d, w) -> {
+            allFolders.remove(folder);
+            expandedFolderNames.remove(folder.name);
+            savePersistedFolders(allFolders);
+            Toast.makeText(activity, "已删除文件夹: " + folder.name, Toast.LENGTH_SHORT).show();
+            renderFoldersView();
         });
-        b.setNegativeButton("关闭", null);
+        b.setNegativeButton("取消", null);
         b.show();
     }
 
-    /**
-     * 归档会话操作面板：支持查看历史问答快照、导出 Markdown、重新将首题注入提问框、或在应用内加载原URL
-     */
-    private void showChatActionDialog(SavedChat chat) {
-        String[] actions = {"📖 查看完整问答快照", "📤 导出该会话为 Markdown", "💡 提取原问题填入输入框", "🔗 在 WebView 中加载 URL"};
-        AlertDialog.Builder b = new AlertDialog.Builder(activity);
-        b.setTitle(chat.title);
-        b.setItems(actions, (d, idx) -> {
-            switch (idx) {
-                case 0:
-                    showSnapshotViewerDialog(chat);
-                    break;
-                case 1:
-                    Intent shareIntent = new Intent(Intent.ACTION_SEND);
-                    shareIntent.setType("text/plain");
-                    shareIntent.putExtra(Intent.EXTRA_SUBJECT, chat.title);
-                    shareIntent.putExtra(Intent.EXTRA_TEXT, chat.markdownSnapshot);
-                    activity.startActivity(Intent.createChooser(shareIntent, "导出归档会话"));
-                    break;
-                case 2:
-                    fillToGemini(chat.title);
-                    closeDrawer();
-                    break;
-                case 3:
-                    loadRealConversationUrl(chat.url);
-                    closeDrawer();
-                    break;
-            }
-        });
-        b.setNegativeButton("返回", null);
-        b.show();
+    private void confirmDeleteChat(FolderData folder, SavedChat chat, List<FolderData> allFolders) {
+        folder.savedChats.remove(chat);
+        savePersistedFolders(allFolders);
+        Toast.makeText(activity, "已移出会话: " + chat.title, Toast.LENGTH_SHORT).show();
+        renderFoldersView();
     }
 
     private void showSnapshotViewerDialog(SavedChat chat) {
@@ -697,22 +970,6 @@ public class VoyagerOverlayView extends FrameLayout {
         });
         b.setNegativeButton("关闭", null);
         b.show();
-    }
-
-    private void loadRealConversationUrl(String url) {
-        WebView webView = findWebView(activity.getWindow().getDecorView());
-        if (webView != null) {
-            webView.loadUrl(url);
-            Toast.makeText(activity, "正在加载会话...", Toast.LENGTH_SHORT).show();
-        } else {
-            try {
-                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                activity.startActivity(intent);
-            } catch (Exception e) {
-                copyToClipboard(url);
-                Toast.makeText(activity, "已复制会话链接: " + url, Toast.LENGTH_SHORT).show();
-            }
-        }
     }
 
     // ==================== 2. 真实时间线导航 (真正展示真实问题 + 真正物理平滑滚动并高亮) ====================

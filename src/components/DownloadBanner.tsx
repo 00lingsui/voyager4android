@@ -295,7 +295,7 @@ dependencies {
             Gemini Voyager 手机端旗舰版增强插件 (LSPosed)
           </h2>
           <p className="text-xs sm:text-sm text-zinc-300 max-w-2xl leading-relaxed">
-            已升级 <strong className="text-emerald-400">52dp 圆形翡翠绿发光悬浮球</strong>（支持手指自由拖拽 + 松手平滑吸附屏幕边缘）！集成 <strong className="text-emerald-400">三级彩色文件夹树、垂直时间线小地图、支持 {{变量}} 模版的 Prompt 库、Markdown 导出与公式 LaTeX 提取</strong>！
+            已升级 <strong className="text-emerald-400">52dp 圆形翡翠绿发光悬浮球</strong>（支持手指自由拖拽 + 松手平滑吸附屏幕边缘）！集成 <strong className="text-emerald-400">三级彩色文件夹树（点击直接进入对话）、永久固定签名（免卸载覆盖升级）、垂直时间线小地图、支持 {'{{变量}}'} 模版的 Prompt 库、Markdown 导出与公式 LaTeX 提取</strong>！
           </p>
         </div>
 
