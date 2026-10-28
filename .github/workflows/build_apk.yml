@@ -115,7 +115,14 @@ jobs:
           path: single_apk/Voyager-Gemini-Enhancer.apk
           retention-days: 14
 
-      - name: 自动发布到 GitHub Releases (免解压直链 APK)
+      - name: 获取最近一次 Commit 信息
+        id: commit_info
+        run: |
+          # 获取最近一条 commit 的标题和内容
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+          echo "msg=$COMMIT_MSG" >> $GITHUB_OUTPUT
+
+      - name: 自动发布到 GitHub Releases (自动同步 Commit)
         uses: softprops/action-gh-release@v2
         if: github.event_name != 'pull_request'
         with:
@@ -123,17 +130,9 @@ jobs:
           name: "Voyager for Gemini ${{ steps.version.outputs.version_name }}"
           make_latest: true
           body: |
-            - 🚀 **自动构建版本**：`v${{ steps.version.outputs.version_name }}` (Build: `${{ steps.version.outputs.version_code }}`)
-            - 🪐 **Gemini 额度与刷新时间监控 UI (StatusBar Capsule)**：胶囊型/圆角扁平顶部悬浮条，双进度条实时显示短期与每周额度用量、绿色指示点、动态精确倒计时；右侧集成 ↻ 手动刷新与 🗗 详情弹窗。
-            - 🪟 **FloatingQuotaView (WindowManager 架构)**：基于独立 WindowManager 浮动层渲染，支持全屏自由平滑触控拖拽与安全生命周期回收。
-            - 🔘 **圆形发光悬浮球**：升级为 52dp 翡翠绿圆形发光悬浮球，支持全屏自由拖拽、松手平滑自动贴边吸附、闲置自动半透明淡化。
-            - 🔖 **会话书签与极速直达**：新增星标会话书签功能，一键收藏重点对话；点击书签卡片即刻直达相对应对话记录与完整问答详情页面。
-            - 📂 **三级分类文件夹**：精准捕获并收录当前会话，支持树状文件夹归类管理与点击回溯问答记录。
-            - 📍 **对话时间线导航**：自动提炼聊天提问节点为可视化小地图，点击平滑滚动并高亮定位当前对话。
-            - 💾 **多格式数据导出**：一键导出包含标准代码高亮渲染的 Markdown / JSON 格式文本，自动唤起系统级分享。
-            - 💡 **提示词库与变量模版**：内置 Prompt 词库，支持 `{{变量}}` 占位符一键填入输入框并聚焦。
-            - 📐 **数学公式多平台复制**：支持一键提取公式并转换为 LaTeX、MathML (专为 Word 优化) 及 Notion 兼容格式。
-            - 🔑 **永久固定签名**：内置统一 Release 签名配置，后续版本覆盖更新无需重复卸载安装。
+            - 🚀 **版本号**：`v${{ steps.version.outputs.version_name }}` (Build: `${{ steps.version.outputs.version_code }}`)
+            - 📝 **本次更新内容**：
+              `📦 ${{ steps.commit_info.outputs.msg }}`
           files: single_apk/Voyager-Gemini-Enhancer.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
