@@ -621,7 +621,14 @@ public class FloatingQuotaView extends FrameLayout implements QuotaParser.OnQuot
         card.setOrientation(LinearLayout.VERTICAL);
         int p = dp(12);
         card.setPadding(p, p, p, p);
-        card.setMargins(0, 0, 0, dp(10));
+        
+        // 【已修复】正确使用 LayoutParams 设置 LinearLayout 的外边距
+        LinearLayout.LayoutParams layoutParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        layoutParams.setMargins(0, 0, 0, dp(10));
+        card.setLayoutParams(layoutParams);
 
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(Color.parseColor("#27272A"));
