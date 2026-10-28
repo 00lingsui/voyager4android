@@ -482,16 +482,16 @@ public class VoyagerOverlayView extends FrameLayout {
                     "    if (dt.length > 0) { title = dt; }\n" +
                     "  }\n" +
                     "  var url = window.location.href || '';\n" +
-                    "  if (!/\\/app\\/[a-zA-Z0-9_-]{4,}/.test(url)) {\n" +
-                    "    var activeLink = document.querySelector('a[aria-current=\"page\"][href*=\"/app/\"], a.selected[href*=\"/app/\"], [data-is-selected=\"true\"] a[href*=\"/app/\"], li.selected a[href*=\"/app/\"]');\n" +
-                    "    if (activeLink && activeLink.href && /\\/app\\/[a-zA-Z0-9_-]{4,}/.test(activeLink.href)) {\n" +
+                    "  if (!/\\/app\\/[a-zA-Z0-9_/-]{3,}/.test(url)) {\n" +
+                    "    var activeLink = document.querySelector('a[aria-current=\"page\"][href*=\"/app/\"], a.selected[href*=\"/app/\"], [data-is-selected=\"true\"] a[href*=\"/app/\"], li.selected a[href*=\"/app/\"], [data-test-id=\"conversation-item\"].selected a');\n" +
+                    "    if (activeLink && activeLink.href && /\\/app\\/[a-zA-Z0-9_/-]{3,}/.test(activeLink.href)) {\n" +
                     "      url = activeLink.href;\n" +
                     "    }\n" +
                     "  }\n" +
-                    "  if (!/\\/app\\/[a-zA-Z0-9_-]{4,}/.test(url)) {\n" +
+                    "  if (!/\\/app\\/[a-zA-Z0-9_/-]{3,}/.test(url)) {\n" +
                     "    var can = document.querySelector('link[rel=\"canonical\"], meta[property=\"og:url\"]');\n" +
                     "    var canUrl = can ? (can.getAttribute('href') || can.getAttribute('content') || '') : '';\n" +
-                    "    if (/\\/app\\/[a-zA-Z0-9_-]{4,}/.test(canUrl)) { url = canUrl; }\n" +
+                    "    if (/\\/app\\/[a-zA-Z0-9_/-]{3,}/.test(canUrl)) { url = canUrl; }\n" +
                     "  }\n" +
                     "  var turns = [];\n" +
                     "  var qElements = document.querySelectorAll('user-query, .query-text, div[class*=\"user-query\"], .user-query-container, [data-message-author=\"user\"]');\n" +
@@ -1169,6 +1169,7 @@ public class VoyagerOverlayView extends FrameLayout {
             int idx = clean.indexOf("/app/");
             String after = clean.substring(idx + 5);
             if (after.startsWith("?")) return false;
+            if (after.startsWith("c/")) after = after.substring(2);
             return after.length() >= 4;
         }
         return clean.contains("/share/");
@@ -1186,89 +1187,157 @@ public class VoyagerOverlayView extends FrameLayout {
             if (qIdx != -1) after = after.substring(0, qIdx);
             int hIdx = after.indexOf('#');
             if (hIdx != -1) after = after.substring(0, hIdx);
+            if (after.startsWith("c/")) after = after.substring(2);
             return after.trim();
         }
         return "";
     }
 
     /**
+     * 规范化 Gemini 会话绝对 URL
+     */
+    public static String normalizeGeminiUrl(String url, String convoId) {
+        if (url != null && !url.trim().isEmpty()) {
+            String u = url.trim();
+            if (u.startsWith("/app/")) return "https://gemini.google.com" + u;
+            if (u.startsWith("gemini.google.com")) return "https://" + u;
+            if (u.startsWith("http://") || u.startsWith("https://")) return u;
+        }
+        if (convoId != null && !convoId.trim().isEmpty()) {
+            return "https://gemini.google.com/app/" + convoId.trim();
+        }
+        return "";
+    }
+
+    /**
      * 核心关键：点击已分类的会话直接进入相对应的对话中
-     * 涵盖 5 重自适应真实跳转驱动机制：
-     * 1. 自动填入提问框并聚焦，确保即使路由未生效也能即刻对话；
-     * 2. WebView DOM 与 Router 驱动：查找并点击 Gemini 网页版侧边栏/历史会话中匹配的链接或直接导航 location.href；
-     * 3. 原生当前视图树搜索与点击：直接在当前界面搜索匹配会话标题的控件并触发点击；
-     * 4. 原生侧边栏自动展开与检索：自动寻找并点击 Gemini 汉堡菜单按钮 (☰) 展开“最近聊天”列表；
-     * 5. Deep Link 显式 Intent 唤醒与浮动智能续接条 (Floating Resume HUD)。
+     * 注意：绝不在提问输入框中填充文字，而是真正切换 Gemini 的当前会话视图！
      */
     private void enterAndSwitchConversation(final SavedChat chat) {
         if (chat == null) return;
         closeDrawer();
-        Toast.makeText(activity, "⚡ 正在跳转至: " + chat.title, Toast.LENGTH_SHORT).show();
+        Toast.makeText(activity, "⚡ 正在切换至「" + chat.title + "」...", Toast.LENGTH_SHORT).show();
 
-        final String safeUrl = (chat.url == null) ? "" : chat.url.trim();
+        final String rawUrl = (chat.url == null) ? "" : chat.url.trim();
         final String safeTitle = (chat.title == null) ? "" : chat.title.trim();
+        final String convoId = extractConversationId(rawUrl);
+        final String safeUrl = normalizeGeminiUrl(rawUrl, convoId);
         final boolean hasConvoUrl = isValidGeminiConversationUrl(safeUrl);
-        final String convoId = extractConversationId(safeUrl);
 
-        // 1. 核心保障：自动将该会话原题/标题填入提问框并聚焦
-        fillToGemini(safeTitle);
-
-        // 2. 尝试方式一: WebView DOM 自动化导航与路由跳转 (针对 Web / 混合渲染容器)
+        // 尝试方式一: WebView DOM 自动化导航与 SPA 路由切换 (针对 Web / 混合渲染容器)
         final WebView webView = findWebView(activity.getWindow().getDecorView());
         if (webView != null) {
             String js = "(function() {\n" +
                     "  var targetUrl = " + JSONObject.quote(safeUrl) + ";\n" +
                     "  var targetId = " + JSONObject.quote(convoId) + ";\n" +
                     "  var targetTitle = " + JSONObject.quote(safeTitle) + ";\n" +
-                    "  function tryClickMatch() {\n" +
-                    "    var links = document.querySelectorAll('a[href*=\"/app/\"], [data-test-id=\"conversation-title\"], div[role=\"button\"], .conversation-title, li a');\n" +
-                    "    for (var i = 0; i < links.length; i++) {\n" +
-                    "      var el = links[i];\n" +
-                    "      var href = el.getAttribute('href') || el.href || '';\n" +
-                    "      var text = (el.innerText || '').trim();\n" +
-                    "      if ((targetId.length >= 4 && href.indexOf(targetId) !== -1) ||\n" +
-                    "          (targetTitle.length >= 2 && text && (text.indexOf(targetTitle) !== -1 || targetTitle.indexOf(text) !== -1))) {\n" +
-                    "        var clickable = el.closest('a') || el;\n" +
-                    "        clickable.click();\n" +
-                    "        return true;\n" +
+                    "  var cleanTarget = targetTitle.toLowerCase()\n" +
+                    "    .replace(/^[💬📄⭐💡🚀\\s]+/, '')\n" +
+                    "    .replace(/[.。,，!！?？\\s]+$/, '')\n" +
+                    "    .trim();\n" +
+                    "  function findAndClickItem() {\n" +
+                    "    var items = document.querySelectorAll(\n" +
+                    "      'a[href*=\"/app/\"], [data-test-id=\"conversation-item\"], [data-test-id=\"conversation-title\"], ' +\n" +
+                    "      '.conversation-title-container, .conversation-container, mat-list-item, [role=\"link\"], [role=\"button\"], ' +\n" +
+                    "      'li a, .chat-history-item, bard-sidenav a'\n" +
+                    "    );\n" +
+                    "    if (targetId && targetId.length >= 4) {\n" +
+                    "      for (var i = 0; i < items.length; i++) {\n" +
+                    "        var el = items[i];\n" +
+                    "        var href = el.getAttribute('href') || el.href || '';\n" +
+                    "        if (href && href.indexOf(targetId) !== -1) {\n" +
+                    "          var clickable = el.closest('a') || el.closest('[role=\"button\"]') || el;\n" +
+                    "          clickable.click();\n" +
+                    "          return 'clicked_by_id';\n" +
+                    "        }\n" +
                     "      }\n" +
                     "    }\n" +
-                    "    return false;\n" +
+                    "    if (cleanTarget.length >= 2) {\n" +
+                    "      for (var j = 0; j < items.length; j++) {\n" +
+                    "        var it = items[j];\n" +
+                    "        var text = (it.innerText || it.getAttribute('aria-label') || '').toLowerCase().trim();\n" +
+                    "        if (!text) continue;\n" +
+                    "        if (text.indexOf(cleanTarget) !== -1 || cleanTarget.indexOf(text) !== -1) {\n" +
+                    "          var clickable = it.closest('a') || it.closest('[role=\"button\"]') || it;\n" +
+                    "          clickable.click();\n" +
+                    "          return 'clicked_by_title_contain';\n" +
+                    "        }\n" +
+                    "        var subLen = Math.min(6, Math.min(cleanTarget.length, text.length));\n" +
+                    "        if (subLen >= 4 && text.substring(0, subLen) === cleanTarget.substring(0, subLen)) {\n" +
+                    "          var clickable = it.closest('a') || it.closest('[role=\"button\"]') || it;\n" +
+                    "          clickable.click();\n" +
+                    "          return 'clicked_by_prefix';\n" +
+                    "        }\n" +
+                    "      }\n" +
+                    "    }\n" +
+                    "    return null;\n" +
                     "  }\n" +
-                    "  if (tryClickMatch()) return 'clicked_immediate';\n" +
-                    "  // 若未找到，可能侧边栏未展开，尝试寻找并点击汉堡菜单展开\n" +
-                    "  var menuBtn = document.querySelector('button[aria-label*=\"menu\" i], button[aria-label*=\"菜单\" i], button[aria-label*=\"导航\" i], [data-test-id=\"side-nav-button\"], .menu-button, button.side-nav-button');\n" +
+                    "  var immediate = findAndClickItem();\n" +
+                    "  if (immediate) return immediate;\n" +
+                    "  // 侧边栏折叠状态：模拟点击汉堡菜单展开\n" +
+                    "  var menuBtn = document.querySelector(\n" +
+                    "    'button[aria-label*=\"menu\" i], button[aria-label*=\"菜单\" i], button[aria-label*=\"导航\" i], ' +\n" +
+                    "    'button[aria-label*=\"drawer\" i], button[aria-label*=\"Main menu\" i], button[aria-label*=\"Side navigation\" i], ' +\n" +
+                    "    '[data-test-id=\"side-nav-button\"], [data-test-id=\"side-nav-menu-button\"], button.side-nav-button, ' +\n" +
+                    "    'button.mat-mdc-menu-trigger, mat-icon[fonticon=\"menu\"]'\n" +
+                    "  );\n" +
+                    "  if (!menuBtn) {\n" +
+                    "    var candidates = document.querySelectorAll('button, div[role=\"button\"]');\n" +
+                    "    for (var k = 0; k < candidates.length; k++) {\n" +
+                    "      var r = candidates[k].getBoundingClientRect();\n" +
+                    "      if (r.left >= 0 && r.left < 85 && r.top >= 0 && r.top < 90 && r.width > 0 && r.height > 0) {\n" +
+                    "        menuBtn = candidates[k];\n" +
+                    "        break;\n" +
+                    "      }\n" +
+                    "    }\n" +
+                    "  }\n" +
                     "  if (menuBtn) {\n" +
                     "    menuBtn.click();\n" +
                     "    setTimeout(function() {\n" +
-                    "      if (!tryClickMatch() && targetUrl && targetUrl.indexOf('/app/') !== -1 && targetId.length >= 4) {\n" +
+                    "      var afterOpen = findAndClickItem();\n" +
+                    "      if (!afterOpen && targetUrl && (targetUrl.indexOf('/app/') !== -1 || targetUrl.indexOf('/share/') !== -1)) {\n" +
+                    "        try {\n" +
+                    "          if (window.history && window.history.pushState) {\n" +
+                    "            window.history.pushState(null, '', targetUrl);\n" +
+                    "            window.dispatchEvent(new PopStateEvent('popstate'));\n" +
+                    "          }\n" +
+                    "        } catch(e) {}\n" +
                     "        window.location.href = targetUrl;\n" +
                     "      }\n" +
-                    "    }, 320);\n" +
+                    "    }, 280);\n" +
                     "    return 'menu_opened_deferred';\n" +
                     "  }\n" +
-                    "  if (targetUrl && targetUrl.indexOf('/app/') !== -1 && targetId.length >= 4) {\n" +
+                    "  if (targetUrl && (targetUrl.indexOf('/app/') !== -1 || targetUrl.indexOf('/share/') !== -1)) {\n" +
+                    "    try {\n" +
+                    "      if (window.history && window.history.pushState) {\n" +
+                    "        window.history.pushState(null, '', targetUrl);\n" +
+                    "        window.dispatchEvent(new PopStateEvent('popstate'));\n" +
+                    "      }\n" +
+                    "    } catch(e) {}\n" +
                     "    window.location.href = targetUrl;\n" +
                     "    return 'location_redirect';\n" +
                     "  }\n" +
                     "  return 'none';\n" +
                     "})();";
 
+            final String navUrl = hasConvoUrl ? safeUrl : (convoId.length() >= 4 ? ("https://gemini.google.com/app/" + convoId) : "");
             webView.evaluateJavascript(js, result -> {
-                if (hasConvoUrl) {
+                if (!navUrl.isEmpty()) {
                     mainHandler.postDelayed(() -> {
                         try {
                             String curWvUrl = webView.getUrl();
-                            if (curWvUrl == null || !curWvUrl.contains(convoId)) {
-                                webView.loadUrl(safeUrl);
+                            if (curWvUrl == null || (!curWvUrl.contains(convoId) && !curWvUrl.equals(navUrl))) {
+                                webView.loadUrl(navUrl);
                             }
                         } catch (Exception ignored) {}
                     }, 450);
                 }
             });
+            showFloatingResumeHud(chat);
+            return;
         }
 
-        // 3. 尝试方式二: 直接在原生当前视图树中搜索目标会话条目
+        // 尝试方式二: 原生当前视图树搜索与点击
         View matchView = findConversationViewInHierarchy(activity.getWindow().getDecorView(), safeTitle);
         if (matchView != null) {
             View clickable = getClickableAncestorOrSelf(matchView);
@@ -1278,8 +1347,7 @@ public class VoyagerOverlayView extends FrameLayout {
             return;
         }
 
-        // 4. 尝试方式三: 若未直接找到，通常是因为 Gemini 原生“最近聊天”抽屉处于收起状态。
-        // 自动检索并模拟点击 Gemini 顶栏左侧的汉堡菜单按钮 (☰)，展开最近聊天列表！
+        // 尝试方式三: 原生侧边栏自动展开与检索
         View menuBtn = findGeminiMenuButton(activity.getWindow().getDecorView());
         if (menuBtn != null) {
             menuBtn.performClick();
@@ -1289,12 +1357,11 @@ public class VoyagerOverlayView extends FrameLayout {
                     View clickable = getClickableAncestorOrSelf(afterOpenView);
                     clickable.performClick();
                     Toast.makeText(activity, "✅ 已切换至「" + safeTitle + "」", Toast.LENGTH_SHORT).show();
-                } else {
-                    showFloatingResumeHud(chat);
                 }
-            }, 300);
+                showFloatingResumeHud(chat);
+            }, 350);
         } else {
-            // 5. 尝试方式四: Android Deep Link Intent
+            // 尝试方式四: Android Deep Link Intent
             if (hasConvoUrl) {
                 try {
                     Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(safeUrl));
@@ -1497,11 +1564,32 @@ public class VoyagerOverlayView extends FrameLayout {
         return view;
     }
 
-    private void saveChatToSpecificFolder(FolderData target, List<FolderData> allFolders) {
-        WebView wv = findWebView(activity.getWindow().getDecorView());
-        if (wv != null && wv.getUrl() != null && isValidGeminiConversationUrl(wv.getUrl())) {
-            currentRealUrl = wv.getUrl();
+    private void saveChatToSpecificFolder(final FolderData target, final List<FolderData> allFolders) {
+        final WebView wv = findWebView(activity.getWindow().getDecorView());
+        if (wv != null) {
+            String probeJs = "(function(){\n" +
+                    "  var u = window.location.href || '';\n" +
+                    "  if (!u || u.indexOf('/app/') === -1) {\n" +
+                    "    var act = document.querySelector('a[aria-current=\"page\"][href*=\"/app/\"], a.selected[href*=\"/app/\"], [data-is-selected=\"true\"] a[href*=\"/app/\"]');\n" +
+                    "    if (act && act.href) u = act.href;\n" +
+                    "  }\n" +
+                    "  return u;\n" +
+                    "})();";
+            wv.evaluateJavascript(probeJs, urlResult -> {
+                if (urlResult != null && !urlResult.equals("null") && !urlResult.isEmpty()) {
+                    String clean = urlResult.replace("\"", "").trim();
+                    if (isValidGeminiConversationUrl(clean)) {
+                        currentRealUrl = clean;
+                    }
+                }
+                doSaveChatToSpecificFolder(target, allFolders);
+            });
+        } else {
+            doSaveChatToSpecificFolder(target, allFolders);
         }
+    }
+
+    private void doSaveChatToSpecificFolder(FolderData target, List<FolderData> allFolders) {
         if ((currentRealTitle.isEmpty() || currentRealTitle.equals("Gemini 对话") || currentRealTitle.equals("Gemini")) && !currentTurns.isEmpty() && !currentTurns.get(0).question.isEmpty()) {
             currentRealTitle = currentTurns.get(0).question;
         }
@@ -2193,10 +2281,31 @@ public class VoyagerOverlayView extends FrameLayout {
     }
 
     private void addCurrentChatToBookmarks() {
-        WebView wv = findWebView(activity.getWindow().getDecorView());
-        if (wv != null && wv.getUrl() != null && isValidGeminiConversationUrl(wv.getUrl())) {
-            currentRealUrl = wv.getUrl();
+        final WebView wv = findWebView(activity.getWindow().getDecorView());
+        if (wv != null) {
+            String probeJs = "(function(){\n" +
+                    "  var u = window.location.href || '';\n" +
+                    "  if (!u || u.indexOf('/app/') === -1) {\n" +
+                    "    var act = document.querySelector('a[aria-current=\"page\"][href*=\"/app/\"], a.selected[href*=\"/app/\"], [data-is-selected=\"true\"] a[href*=\"/app/\"]');\n" +
+                    "    if (act && act.href) u = act.href;\n" +
+                    "  }\n" +
+                    "  return u;\n" +
+                    "})();";
+            wv.evaluateJavascript(probeJs, urlResult -> {
+                if (urlResult != null && !urlResult.equals("null") && !urlResult.isEmpty()) {
+                    String clean = urlResult.replace("\"", "").trim();
+                    if (isValidGeminiConversationUrl(clean)) {
+                        currentRealUrl = clean;
+                    }
+                }
+                doAddCurrentChatToBookmarks();
+            });
+        } else {
+            doAddCurrentChatToBookmarks();
         }
+    }
+
+    private void doAddCurrentChatToBookmarks() {
         if ((currentRealTitle.isEmpty() || currentRealTitle.equals("Gemini 对话") || currentRealTitle.equals("Gemini")) && !currentTurns.isEmpty() && !currentTurns.get(0).question.isEmpty()) {
             currentRealTitle = currentTurns.get(0).question;
         }
