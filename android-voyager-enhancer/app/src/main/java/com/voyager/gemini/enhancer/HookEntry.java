@@ -27,6 +27,21 @@ public class HookEntry implements IXposedHookLoadPackage {
     public static final String GOOGLE_SEARCH_PKG = "com.google.android.googlequicksearchbox";
     public static final String CHATGPT_PKG = "com.openai.chatgpt";
 
+    // 实时追踪的当前活跃会话 ID 与 URL
+    public static volatile String sCurrentConversationId = "";
+    public static volatile String sCurrentConversationUrl = "https://gemini.google.com/app";
+    public static volatile Activity sCurrentActivity = null;
+
+    public static void updateConversationFromUrl(String url) {
+        if (url == null || url.trim().isEmpty()) return;
+        sCurrentConversationUrl = url;
+        String id = VoyagerOverlayView.extractConversationId(url);
+        if (!id.isEmpty()) {
+            sCurrentConversationId = id;
+            XposedBridge.log(TAG + " => 当前活跃会话 ID 更新为: " + id);
+        }
+    }
+
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         String pkg = lpparam.packageName;
@@ -49,6 +64,8 @@ public class HookEntry implements IXposedHookLoadPackage {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         Activity activity = (Activity) param.thisObject;
+                        sCurrentActivity = activity;
+                        inspectActivityIntent(activity);
                         injectVoyagerNativeOverlay(activity);
                     }
                 }
@@ -61,7 +78,26 @@ public class HookEntry implements IXposedHookLoadPackage {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         Activity activity = (Activity) param.thisObject;
+                        sCurrentActivity = activity;
+                        inspectActivityIntent(activity);
                         injectVoyagerNativeOverlay(activity);
+                    }
+                }
+        );
+
+        XposedHelpers.findAndHookMethod(
+                Activity.class,
+                "onNewIntent",
+                android.content.Intent.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        android.content.Intent intent = (android.content.Intent) param.args[0];
+                        if (intent != null && intent.getData() != null) {
+                            String dataStr = intent.getData().toString();
+                            XposedBridge.log(TAG + " => 捕获到 onNewIntent 会话路由: " + dataStr);
+                            updateConversationFromUrl(dataStr);
+                        }
                     }
                 }
         );
@@ -190,6 +226,16 @@ public class HookEntry implements IXposedHookLoadPackage {
             }
         } catch (Throwable ignored) {}
         return result > 0 ? result : dp(activity, 24);
+    }
+
+    private static void inspectActivityIntent(Activity activity) {
+        if (activity == null) return;
+        try {
+            android.content.Intent intent = activity.getIntent();
+            if (intent != null && intent.getData() != null) {
+                updateConversationFromUrl(intent.getData().toString());
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static int dp(Activity activity, int val) {

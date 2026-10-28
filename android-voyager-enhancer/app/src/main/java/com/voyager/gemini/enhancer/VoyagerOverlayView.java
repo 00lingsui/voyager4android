@@ -12,11 +12,13 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -1216,97 +1218,82 @@ public class VoyagerOverlayView extends FrameLayout {
     private void enterAndSwitchConversation(final SavedChat chat) {
         if (chat == null) return;
         closeDrawer();
-        Toast.makeText(activity, "⚡ 正在切换至「" + chat.title + "」...", Toast.LENGTH_SHORT).show();
+        Toast.makeText(activity, "⚡ 正在进入「" + chat.title + "」...", Toast.LENGTH_SHORT).show();
 
         final String rawUrl = (chat.url == null) ? "" : chat.url.trim();
         final String safeTitle = (chat.title == null) ? "" : chat.title.trim();
         final String convoId = extractConversationId(rawUrl);
         final String safeUrl = normalizeGeminiUrl(rawUrl, convoId);
-        final boolean hasConvoUrl = isValidGeminiConversationUrl(safeUrl);
 
-        // 尝试方式一: WebView DOM 自动化导航与 SPA 路由切换 (针对 Web / 混合渲染容器)
+        // 策略一：针对 Gemini 原生 App (Jetpack Compose / 原生 View 树) 进行自动化检索与点击
+        try {
+            View decor = activity.getWindow().getDecorView();
+            AccessibilityNodeInfo rootInfo = decor.getRootView().createAccessibilityNodeInfo();
+            if (rootInfo != null) {
+                // 1. 若当前界面上已可见该会话项 (例如用户已展开侧边栏或位于历史列表)，直接点击
+                AccessibilityNodeInfo targetNode = findAccessibilityNodeByTitle(rootInfo, safeTitle, convoId);
+                if (targetNode != null) {
+                    dispatchNativeNodeClick(activity, targetNode);
+                    Toast.makeText(activity, "✅ 已切换至「" + safeTitle + "」", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+
+                // 2. 当前界面未直接显示会话项，智能识别并点击原生汉堡菜单按钮 (☰) 展开会话列表
+                AccessibilityNodeInfo menuNode = findGeminiHamburgerAccessibilityNode(rootInfo);
+                if (menuNode != null) {
+                    dispatchNativeNodeClick(activity, menuNode);
+                    mainHandler.postDelayed(() -> {
+                        try {
+                            AccessibilityNodeInfo openRoot = activity.getWindow().getDecorView().getRootView().createAccessibilityNodeInfo();
+                            if (openRoot != null) {
+                                AccessibilityNodeInfo matchNode = findAccessibilityNodeByTitle(openRoot, safeTitle, convoId);
+                                if (matchNode != null) {
+                                    dispatchNativeNodeClick(activity, matchNode);
+                                    Toast.makeText(activity, "✅ 已切换至「" + safeTitle + "」", Toast.LENGTH_SHORT).show();
+                                    return;
+                                }
+
+                                // 列表中条目较多时，尝试向下轻滑一次再匹配
+                                AccessibilityNodeInfo scrollNode = findScrollableNode(openRoot);
+                                if (scrollNode != null) {
+                                    scrollNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
+                                    mainHandler.postDelayed(() -> {
+                                        try {
+                                            AccessibilityNodeInfo sRoot = activity.getWindow().getDecorView().getRootView().createAccessibilityNodeInfo();
+                                            if (sRoot != null) {
+                                                AccessibilityNodeInfo sMatch = findAccessibilityNodeByTitle(sRoot, safeTitle, convoId);
+                                                if (sMatch != null) {
+                                                    dispatchNativeNodeClick(activity, sMatch);
+                                                    Toast.makeText(activity, "✅ 已切换至「" + safeTitle + "」", Toast.LENGTH_SHORT).show();
+                                                    return;
+                                                }
+                                            }
+                                        } catch (Throwable ignored) {}
+                                        dispatchGeminiDeepLink(safeUrl, convoId, safeTitle);
+                                    }, 220);
+                                    return;
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                        dispatchGeminiDeepLink(safeUrl, convoId, safeTitle);
+                    }, 280);
+                    return;
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        // 策略二：原生 Deep Link 路由跳转至目标会话 (官方注册的 com.google.android.apps.bard 专属路由)
+        if (!safeUrl.isEmpty() || !convoId.isEmpty()) {
+            dispatchGeminiDeepLink(safeUrl, convoId, safeTitle);
+            return;
+        }
+
+        // 策略三：WebView 容器环境 SPA pushState 降级补充 (若在混合容器/Web测试环境下运行)
         final WebView webView = findWebView(activity.getWindow().getDecorView());
         if (webView != null) {
             String js = "(function() {\n" +
                     "  var targetUrl = " + JSONObject.quote(safeUrl) + ";\n" +
                     "  var targetId = " + JSONObject.quote(convoId) + ";\n" +
-                    "  var targetTitle = " + JSONObject.quote(safeTitle) + ";\n" +
-                    "  var cleanTarget = targetTitle.toLowerCase()\n" +
-                    "    .replace(/^[💬📄⭐💡🚀\\s]+/, '')\n" +
-                    "    .replace(/[.。,，!！?？\\s]+$/, '')\n" +
-                    "    .trim();\n" +
-                    "  function findAndClickItem() {\n" +
-                    "    var items = document.querySelectorAll(\n" +
-                    "      'a[href*=\"/app/\"], [data-test-id=\"conversation-item\"], [data-test-id=\"conversation-title\"], ' +\n" +
-                    "      '.conversation-title-container, .conversation-container, mat-list-item, [role=\"link\"], [role=\"button\"], ' +\n" +
-                    "      'li a, .chat-history-item, bard-sidenav a'\n" +
-                    "    );\n" +
-                    "    if (targetId && targetId.length >= 4) {\n" +
-                    "      for (var i = 0; i < items.length; i++) {\n" +
-                    "        var el = items[i];\n" +
-                    "        var href = el.getAttribute('href') || el.href || '';\n" +
-                    "        if (href && href.indexOf(targetId) !== -1) {\n" +
-                    "          var clickable = el.closest('a') || el.closest('[role=\"button\"]') || el;\n" +
-                    "          clickable.click();\n" +
-                    "          return 'clicked_by_id';\n" +
-                    "        }\n" +
-                    "      }\n" +
-                    "    }\n" +
-                    "    if (cleanTarget.length >= 2) {\n" +
-                    "      for (var j = 0; j < items.length; j++) {\n" +
-                    "        var it = items[j];\n" +
-                    "        var text = (it.innerText || it.getAttribute('aria-label') || '').toLowerCase().trim();\n" +
-                    "        if (!text) continue;\n" +
-                    "        if (text.indexOf(cleanTarget) !== -1 || cleanTarget.indexOf(text) !== -1) {\n" +
-                    "          var clickable = it.closest('a') || it.closest('[role=\"button\"]') || it;\n" +
-                    "          clickable.click();\n" +
-                    "          return 'clicked_by_title_contain';\n" +
-                    "        }\n" +
-                    "        var subLen = Math.min(6, Math.min(cleanTarget.length, text.length));\n" +
-                    "        if (subLen >= 4 && text.substring(0, subLen) === cleanTarget.substring(0, subLen)) {\n" +
-                    "          var clickable = it.closest('a') || it.closest('[role=\"button\"]') || it;\n" +
-                    "          clickable.click();\n" +
-                    "          return 'clicked_by_prefix';\n" +
-                    "        }\n" +
-                    "      }\n" +
-                    "    }\n" +
-                    "    return null;\n" +
-                    "  }\n" +
-                    "  var immediate = findAndClickItem();\n" +
-                    "  if (immediate) return immediate;\n" +
-                    "  // 侧边栏折叠状态：模拟点击汉堡菜单展开\n" +
-                    "  var menuBtn = document.querySelector(\n" +
-                    "    'button[aria-label*=\"menu\" i], button[aria-label*=\"菜单\" i], button[aria-label*=\"导航\" i], ' +\n" +
-                    "    'button[aria-label*=\"drawer\" i], button[aria-label*=\"Main menu\" i], button[aria-label*=\"Side navigation\" i], ' +\n" +
-                    "    '[data-test-id=\"side-nav-button\"], [data-test-id=\"side-nav-menu-button\"], button.side-nav-button, ' +\n" +
-                    "    'button.mat-mdc-menu-trigger, mat-icon[fonticon=\"menu\"]'\n" +
-                    "  );\n" +
-                    "  if (!menuBtn) {\n" +
-                    "    var candidates = document.querySelectorAll('button, div[role=\"button\"]');\n" +
-                    "    for (var k = 0; k < candidates.length; k++) {\n" +
-                    "      var r = candidates[k].getBoundingClientRect();\n" +
-                    "      if (r.left >= 0 && r.left < 85 && r.top >= 0 && r.top < 90 && r.width > 0 && r.height > 0) {\n" +
-                    "        menuBtn = candidates[k];\n" +
-                    "        break;\n" +
-                    "      }\n" +
-                    "    }\n" +
-                    "  }\n" +
-                    "  if (menuBtn) {\n" +
-                    "    menuBtn.click();\n" +
-                    "    setTimeout(function() {\n" +
-                    "      var afterOpen = findAndClickItem();\n" +
-                    "      if (!afterOpen && targetUrl && (targetUrl.indexOf('/app/') !== -1 || targetUrl.indexOf('/share/') !== -1)) {\n" +
-                    "        try {\n" +
-                    "          if (window.history && window.history.pushState) {\n" +
-                    "            window.history.pushState(null, '', targetUrl);\n" +
-                    "            window.dispatchEvent(new PopStateEvent('popstate'));\n" +
-                    "          }\n" +
-                    "        } catch(e) {}\n" +
-                    "        window.location.href = targetUrl;\n" +
-                    "      }\n" +
-                    "    }, 280);\n" +
-                    "    return 'menu_opened_deferred';\n" +
-                    "  }\n" +
                     "  if (targetUrl && (targetUrl.indexOf('/app/') !== -1 || targetUrl.indexOf('/share/') !== -1)) {\n" +
                     "    try {\n" +
                     "      if (window.history && window.history.pushState) {\n" +
@@ -1315,105 +1302,129 @@ public class VoyagerOverlayView extends FrameLayout {
                     "      }\n" +
                     "    } catch(e) {}\n" +
                     "    window.location.href = targetUrl;\n" +
-                    "    return 'location_redirect';\n" +
                     "  }\n" +
-                    "  return 'none';\n" +
                     "})();";
+            webView.evaluateJavascript(js, null);
+        }
+    }
 
-            final String navUrl = hasConvoUrl ? safeUrl : (convoId.length() >= 4 ? ("https://gemini.google.com/app/" + convoId) : "");
-            webView.evaluateJavascript(js, result -> {
-                if (!navUrl.isEmpty()) {
-                    mainHandler.postDelayed(() -> {
-                        try {
-                            String curWvUrl = webView.getUrl();
-                            if (curWvUrl == null || (!curWvUrl.contains(convoId) && !curWvUrl.equals(navUrl))) {
-                                webView.loadUrl(navUrl);
-                            }
-                        } catch (Exception ignored) {}
-                    }, 450);
-                }
-            });
-            showFloatingResumeHud(chat);
-            return;
+    /**
+     * 发送官方 Deep Link 路由 Intent，直接唤起 Gemini 原生 App 对应会话
+     */
+    private void dispatchGeminiDeepLink(String safeUrl, String convoId, String safeTitle) {
+        String targetUrl = (safeUrl != null && !safeUrl.trim().isEmpty()) ? safeUrl.trim() : ("https://gemini.google.com/app/" + convoId);
+        if (!targetUrl.startsWith("http")) {
+            targetUrl = "https://gemini.google.com/app/" + convoId;
         }
 
-        // 尝试方式二: 原生当前视图树搜索与点击
-        View matchView = findConversationViewInHierarchy(activity.getWindow().getDecorView(), safeTitle);
-        if (matchView != null) {
-            View clickable = getClickableAncestorOrSelf(matchView);
-            clickable.performClick();
-            Toast.makeText(activity, "✅ 已切换至「" + safeTitle + "」", Toast.LENGTH_SHORT).show();
-            showFloatingResumeHud(chat);
-            return;
+        try {
+            Uri uri = Uri.parse(targetUrl);
+            Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+            intent.setPackage("com.google.android.apps.bard");
+            intent.addCategory(Intent.CATEGORY_BROWSABLE);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+
+            // 直接通过反射分发给 Activity.onNewIntent 以免重启界面
+            try {
+                Method m = Activity.class.getDeclaredMethod("onNewIntent", Intent.class);
+                m.setAccessible(true);
+                m.invoke(activity, intent);
+            } catch (Throwable ignored) {}
+
+            activity.startActivity(intent);
+            Toast.makeText(activity, "✅ 已进入「" + safeTitle + "」会话", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            try {
+                Intent fallback = new Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl));
+                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                activity.startActivity(fallback);
+                Toast.makeText(activity, "✅ 已尝试唤起会话", Toast.LENGTH_SHORT).show();
+            } catch (Exception ignored) {}
+        }
+    }
+
+    /**
+     * 在 Jetpack Compose / Android View 视图树中通过 AccessibilityNodeInfo 智能定位目标会话
+     */
+    private AccessibilityNodeInfo findAccessibilityNodeByTitle(AccessibilityNodeInfo node, String title, String convoId) {
+        if (node == null) return null;
+        String query = (title != null) ? title.trim() : "";
+        if (query.startsWith("📄") || query.startsWith("💬") || query.startsWith("⭐")) {
+            query = query.substring(1).trim();
+        }
+        if (query.length() > 20) {
+            query = query.substring(0, 20).trim();
         }
 
-        // 尝试方式三: 原生侧边栏自动展开与检索
-        View menuBtn = findGeminiMenuButton(activity.getWindow().getDecorView());
-        if (menuBtn != null) {
-            menuBtn.performClick();
-            mainHandler.postDelayed(() -> {
-                View afterOpenView = findConversationViewInHierarchy(activity.getWindow().getDecorView(), safeTitle);
-                if (afterOpenView != null) {
-                    View clickable = getClickableAncestorOrSelf(afterOpenView);
-                    clickable.performClick();
-                    Toast.makeText(activity, "✅ 已切换至「" + safeTitle + "」", Toast.LENGTH_SHORT).show();
-                }
-                showFloatingResumeHud(chat);
-            }, 350);
-        } else {
-            // 尝试方式四: Android Deep Link Intent
-            if (hasConvoUrl) {
-                try {
-                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(safeUrl));
-                    intent.setPackage("com.google.android.apps.bard");
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-                    activity.startActivity(intent);
-                } catch (Exception e) {
-                    try {
-                        Intent fallbackIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(safeUrl));
-                        fallbackIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        activity.startActivity(fallbackIntent);
-                    } catch (Exception ignored) {}
+        CharSequence textCs = node.getText();
+        CharSequence descCs = node.getContentDescription();
+        String text = (textCs != null) ? textCs.toString().trim() : "";
+        String desc = (descCs != null) ? descCs.toString().trim() : "";
+
+        if (!query.isEmpty() && query.length() >= 2) {
+            if (!text.isEmpty()) {
+                if (text.equalsIgnoreCase(query) || text.contains(query) || query.contains(text)) {
+                    return node;
                 }
             }
-            showFloatingResumeHud(chat);
+            if (!desc.isEmpty()) {
+                if (desc.equalsIgnoreCase(query) || desc.contains(query) || query.contains(desc)) {
+                    return node;
+                }
+            }
         }
+
+        if (convoId != null && convoId.length() >= 4) {
+            if (text.contains(convoId) || desc.contains(convoId)) {
+                return node;
+            }
+        }
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                AccessibilityNodeInfo found = findAccessibilityNodeByTitle(child, title, convoId);
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     /**
      * 智能识别并定位 Gemini 原生界面的侧边栏汉堡菜单按钮 (☰)
      */
-    private View findGeminiMenuButton(View root) {
-        if (root == null || root.getVisibility() != View.VISIBLE) return null;
-        if ("VOYAGER_OVERLAY_ROOT".equals(root.getTag()) || root == circularFab || root == drawerLayout) return null;
+    private AccessibilityNodeInfo findGeminiHamburgerAccessibilityNode(AccessibilityNodeInfo node) {
+        if (node == null) return null;
 
-        CharSequence cd = root.getContentDescription();
-        if (cd != null) {
-            String desc = cd.toString().toLowerCase();
+        CharSequence descCs = node.getContentDescription();
+        if (descCs != null) {
+            String desc = descCs.toString().toLowerCase();
             if (desc.contains("menu") || desc.contains("菜单") || desc.contains("nav") ||
                 desc.contains("drawer") || desc.contains("侧边") || desc.contains("导航") ||
                 desc.contains("open") || desc.contains("打开") || desc.contains("主菜单")) {
-                int[] loc = new int[2];
-                root.getLocationOnScreen(loc);
-                if (loc[1] < dp(180)) {
-                    return root;
+                Rect rect = new Rect();
+                node.getBoundsInScreen(rect);
+                if (rect.top >= 0 && rect.top < dp(200) && rect.left >= 0 && rect.left < dp(160)) {
+                    return node;
                 }
             }
         }
 
-        // 识别左上角的可点击图元 (汉堡图标)
-        if ((root instanceof android.widget.ImageView || root instanceof android.widget.ImageButton) && root.isClickable()) {
-            int[] loc = new int[2];
-            root.getLocationOnScreen(loc);
-            if (loc[0] < dp(80) && loc[1] < dp(140) && loc[1] > 0) {
-                return root;
+        // 识别位于左上角区域且可点击的图元按钮
+        if (node.isClickable()) {
+            Rect rect = new Rect();
+            node.getBoundsInScreen(rect);
+            if (rect.width() > 0 && rect.height() > 0 && 
+                rect.left >= 0 && rect.right <= dp(120) && 
+                rect.top >= dp(15) && rect.bottom <= dp(160)) {
+                return node;
             }
         }
 
-        if (root instanceof ViewGroup) {
-            ViewGroup vg = (ViewGroup) root;
-            for (int i = 0; i < vg.getChildCount(); i++) {
-                View found = findGeminiMenuButton(vg.getChildAt(i));
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                AccessibilityNodeInfo found = findGeminiHamburgerAccessibilityNode(child);
                 if (found != null) return found;
             }
         }
@@ -1421,39 +1432,15 @@ public class VoyagerOverlayView extends FrameLayout {
     }
 
     /**
-     * 在视图树中递归寻找与目标会话标题匹配的会话项 (支持模糊截断匹配)
+     * 寻找可滑动的列表容器节点
      */
-    private View findConversationViewInHierarchy(View root, String title) {
-        if (root == null || root.getVisibility() != View.VISIBLE || title == null || title.trim().isEmpty()) return null;
-        if ("VOYAGER_OVERLAY_ROOT".equals(root.getTag()) || root == circularFab || root == drawerLayout) return null;
-
-        String query = title.trim();
-        if (query.startsWith("📄") || query.startsWith("💬")) {
-            query = query.substring(1).trim();
-        }
-
-        if (root instanceof TextView && !(root instanceof EditText)) {
-            CharSequence cs = ((TextView) root).getText();
-            if (cs != null) {
-                String text = cs.toString().trim();
-                if (text.length() >= 2) {
-                    if (text.equalsIgnoreCase(query) || text.contains(query) || query.contains(text)) {
-                        return root;
-                    }
-                    if (query.length() >= 5 && text.length() >= 5) {
-                        String prefix = query.substring(0, Math.min(6, query.length()));
-                        if (text.startsWith(prefix)) {
-                            return root;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (root instanceof ViewGroup) {
-            ViewGroup vg = (ViewGroup) root;
-            for (int i = 0; i < vg.getChildCount(); i++) {
-                View found = findConversationViewInHierarchy(vg.getChildAt(i), title);
+    private AccessibilityNodeInfo findScrollableNode(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+        if (node.isScrollable()) return node;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                AccessibilityNodeInfo found = findScrollableNode(child);
                 if (found != null) return found;
             }
         }
@@ -1461,94 +1448,44 @@ public class VoyagerOverlayView extends FrameLayout {
     }
 
     /**
-     * 浮动智能续接条：进入会话后在屏幕顶层展现快捷小胶囊，支持一键填入输入框续聊和离线快照查看
+     * 对目标无障碍节点分发点击，并在其物理屏幕坐标模拟真实的 MotionEvent 触摸事件 (确保 Jetpack Compose 100% 触发)
      */
-    private void showFloatingResumeHud(final SavedChat chat) {
+    private void dispatchNativeNodeClick(Activity activity, AccessibilityNodeInfo node) {
+        if (node == null) return;
+        try {
+            boolean success = node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            if (!success) {
+                AccessibilityNodeInfo parent = node.getParent();
+                if (parent != null) {
+                    parent.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        try {
+            Rect rect = new Rect();
+            node.getBoundsInScreen(rect);
+            if (rect.width() > 0 && rect.height() > 0) {
+                dispatchSyntheticTapAt(activity, rect.centerX(), rect.centerY());
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /**
+     * 在屏幕绝对物理像素坐标精准派发按下与抬起手势
+     */
+    private void dispatchSyntheticTapAt(Activity activity, float x, float y) {
         if (activity == null || activity.isFinishing()) return;
-        activity.runOnUiThread(() -> {
-            ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
-            View oldHud = decor.findViewWithTag("VOYAGER_RESUME_HUD");
-            if (oldHud != null) decor.removeView(oldHud);
-
-            LinearLayout hud = new LinearLayout(activity);
-            hud.setTag("VOYAGER_RESUME_HUD");
-            hud.setOrientation(LinearLayout.HORIZONTAL);
-            hud.setGravity(Gravity.CENTER_VERTICAL);
-            hud.setPadding(dp(14), dp(8), dp(10), dp(8));
-
-            GradientDrawable gd = new GradientDrawable();
-            gd.setColor(isDarkTheme ? Color.parseColor("#1E293B") : Color.parseColor("#0F172A"));
-            gd.setCornerRadius(dp(22));
-            gd.setStroke(dp(1), Color.parseColor("#10A37F"));
-            hud.setBackground(gd);
-
-            TextView titleTv = new TextView(activity);
-            String displayTitle = chat.title.length() > 14 ? chat.title.substring(0, 14) + "..." : chat.title;
-            titleTv.setText("💬 " + displayTitle);
-            titleTv.setTextColor(Color.WHITE);
-            titleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-            titleTv.setTypeface(null, Typeface.BOLD);
-            hud.addView(titleTv);
-
-            // 续聊填入按钮
-            TextView fillBtn = new TextView(activity);
-            fillBtn.setText(" 💡 填入原题");
-            fillBtn.setTextColor(Color.parseColor("#10A37F"));
-            fillBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-            fillBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
-            fillBtn.setOnClickListener(v -> {
-                fillToGemini(chat.title);
-                decor.removeView(hud);
-            });
-            hud.addView(fillBtn);
-
-            // 查看快照按钮
-            TextView snapBtn = new TextView(activity);
-            snapBtn.setText(" 📖 历史记录");
-            snapBtn.setTextColor(Color.parseColor("#38BDF8"));
-            snapBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-            snapBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
-            snapBtn.setOnClickListener(v -> showSnapshotViewerDialog(chat));
-            hud.addView(snapBtn);
-
-            // 快捷书签按钮
-            TextView bookmarkHudBtn = new TextView(activity);
-            boolean isHudFav = isChatBookmarked(chat);
-            bookmarkHudBtn.setText(isHudFav ? " ★ 已存" : " ⭐ 书签");
-            bookmarkHudBtn.setTextColor(Color.parseColor("#F59E0B"));
-            bookmarkHudBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-            bookmarkHudBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
-            bookmarkHudBtn.setOnClickListener(v -> {
-                toggleBookmark(chat);
-                boolean nowFav = isChatBookmarked(chat);
-                bookmarkHudBtn.setText(nowFav ? " ★ 已存" : " ⭐ 书签");
-            });
-            hud.addView(bookmarkHudBtn);
-
-            // 关闭按钮
-            TextView closeHudBtn = new TextView(activity);
-            closeHudBtn.setText(" ✕");
-            closeHudBtn.setTextColor(Color.parseColor("#94A3B8"));
-            closeHudBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-            closeHudBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
-            closeHudBtn.setOnClickListener(v -> decor.removeView(hud));
-            hud.addView(closeHudBtn);
-
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.TOP | Gravity.CENTER_HORIZONTAL
-            );
-            lp.topMargin = dp(45);
-            decor.addView(hud, lp);
-
-            // 8 秒后自动淡化移除
-            mainHandler.postDelayed(() -> {
-                try {
-                    decor.removeView(hud);
-                } catch (Exception ignored) {}
-            }, 8000);
-        });
+        try {
+            View decor = activity.getWindow().getDecorView();
+            long now = SystemClock.uptimeMillis();
+            MotionEvent down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0);
+            MotionEvent up = MotionEvent.obtain(now, now + 40, MotionEvent.ACTION_UP, x, y, 0);
+            decor.dispatchTouchEvent(down);
+            decor.dispatchTouchEvent(up);
+            down.recycle();
+            up.recycle();
+        } catch (Throwable ignored) {}
     }
 
     private View getClickableAncestorOrSelf(View view) {
@@ -1565,6 +1502,12 @@ public class VoyagerOverlayView extends FrameLayout {
     }
 
     private void saveChatToSpecificFolder(final FolderData target, final List<FolderData> allFolders) {
+        if (HookEntry.sCurrentConversationUrl != null && !HookEntry.sCurrentConversationUrl.isEmpty() && isValidGeminiConversationUrl(HookEntry.sCurrentConversationUrl)) {
+            currentRealUrl = HookEntry.sCurrentConversationUrl;
+        } else if (HookEntry.sCurrentConversationId != null && !HookEntry.sCurrentConversationId.isEmpty()) {
+            currentRealUrl = "https://gemini.google.com/app/" + HookEntry.sCurrentConversationId;
+        }
+
         final WebView wv = findWebView(activity.getWindow().getDecorView());
         if (wv != null) {
             String probeJs = "(function(){\n" +
@@ -2281,6 +2224,12 @@ public class VoyagerOverlayView extends FrameLayout {
     }
 
     private void addCurrentChatToBookmarks() {
+        if (HookEntry.sCurrentConversationUrl != null && !HookEntry.sCurrentConversationUrl.isEmpty() && isValidGeminiConversationUrl(HookEntry.sCurrentConversationUrl)) {
+            currentRealUrl = HookEntry.sCurrentConversationUrl;
+        } else if (HookEntry.sCurrentConversationId != null && !HookEntry.sCurrentConversationId.isEmpty()) {
+            currentRealUrl = "https://gemini.google.com/app/" + HookEntry.sCurrentConversationId;
+        }
+
         final WebView wv = findWebView(activity.getWindow().getDecorView());
         if (wv != null) {
             String probeJs = "(function(){\n" +
