@@ -31,16 +31,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 设置 Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: 设置 Gradle 运行环境
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.5'
-
-      - name: 接受 Android SDK 协议
-        run: yes | sdkmanager --licenses 2>/dev/null || true
 
       - name: 自动计算并生成递增版本号
         id: version
