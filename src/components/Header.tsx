@@ -1,5 +1,5 @@
 import React from 'react';
-import { Cpu, Terminal, ArrowRightLeft, Database, Layers, Sparkles } from 'lucide-react';
+import { Cpu, Terminal, ArrowRightLeft, Database, Layers, Sparkles, Zap } from 'lucide-react';
 
 interface HeaderProps {
   activeTab: string;
@@ -8,6 +8,7 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
   const navItems = [
+    { id: 'quota', label: '额度与刷新监控 UI (StatusBar)', icon: Zap },
     { id: 'releases', label: '版本发布与更新日志 (v1.00)', icon: Sparkles },
     { id: 'arch', label: '核心架构全景', icon: Layers },
     { id: 'compare', label: '技术选型深度对比', icon: ArrowRightLeft },

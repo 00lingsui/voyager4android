@@ -7,10 +7,11 @@ import { SimulationSandbox } from './components/SimulationSandbox';
 import { SkillLibrary } from './components/SkillLibrary';
 import { DownloadBanner } from './components/DownloadBanner';
 import { ReleaseChangelog } from './components/ReleaseChangelog';
+import { QuotaMonitorSimulator } from './components/QuotaMonitorSimulator';
 import { Terminal, Shield, Sparkles, BookOpen } from 'lucide-react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<string>('releases');
+  const [activeTab, setActiveTab] = useState<string>('quota');
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
@@ -20,6 +21,7 @@ export default function App() {
         {/* Unmissable Download Banner at the top */}
         <DownloadBanner />
 
+        {activeTab === 'quota' && <QuotaMonitorSimulator />}
         {activeTab === 'releases' && <ReleaseChangelog />}
         {activeTab === 'arch' && <ArchitectureView />}
         {activeTab === 'compare' && <TechComparison />}
