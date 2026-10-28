@@ -462,14 +462,37 @@ public class VoyagerOverlayView extends FrameLayout {
         // 尝试 1: 检测是否存在 WebView 容器
         WebView webView = findWebView(activity.getWindow().getDecorView());
         if (webView != null) {
+            try {
+                String wvUrl = webView.getUrl();
+                if (isValidGeminiConversationUrl(wvUrl)) {
+                    currentRealUrl = wvUrl;
+                }
+            } catch (Exception ignored) {}
+
             String js = "(function(){\n" +
                     "  var title = '';\n" +
-                    "  var titleEl = document.querySelector('.conversation-title, [data-test-id=\"conversation-title\"], h1, .title-text');\n" +
-                    "  if (titleEl && titleEl.innerText) { title = titleEl.innerText.trim(); }\n" +
-                    "  if (!title) { title = document.title || 'Gemini 对话'; }\n" +
-                    "  var url = window.location.href;\n" +
-                    "  var activeLink = document.querySelector('a[aria-current=\"page\"], a.selected, [data-is-selected=\"true\"] a, a[class*=\"active\"], a[href*=\"/app/\"]');\n" +
-                    "  if (activeLink && activeLink.href && activeLink.href.length > url.length) { url = activeLink.href; }\n" +
+                    "  var activeTitleEl = document.querySelector('.conversation-title[aria-current=\"page\"], a[aria-current=\"page\"] .conversation-title, [data-test-id=\"conversation-title\"].selected, [data-is-selected=\"true\"] .conversation-title');\n" +
+                    "  if (activeTitleEl && activeTitleEl.innerText) { title = activeTitleEl.innerText.trim(); }\n" +
+                    "  if (!title) {\n" +
+                    "    var titleEl = document.querySelector('.conversation-title, [data-test-id=\"conversation-title\"], .chat-title, h1');\n" +
+                    "    if (titleEl && titleEl.innerText) { title = titleEl.innerText.trim(); }\n" +
+                    "  }\n" +
+                    "  if (!title || title === 'Gemini' || title.indexOf('Google') !== -1) {\n" +
+                    "    var dt = (document.title || '').replace(/-?Gemini/i, '').replace(/Google/i, '').trim();\n" +
+                    "    if (dt.length > 0) { title = dt; }\n" +
+                    "  }\n" +
+                    "  var url = window.location.href || '';\n" +
+                    "  if (!/\\/app\\/[a-zA-Z0-9_-]{4,}/.test(url)) {\n" +
+                    "    var activeLink = document.querySelector('a[aria-current=\"page\"][href*=\"/app/\"], a.selected[href*=\"/app/\"], [data-is-selected=\"true\"] a[href*=\"/app/\"], li.selected a[href*=\"/app/\"]');\n" +
+                    "    if (activeLink && activeLink.href && /\\/app\\/[a-zA-Z0-9_-]{4,}/.test(activeLink.href)) {\n" +
+                    "      url = activeLink.href;\n" +
+                    "    }\n" +
+                    "  }\n" +
+                    "  if (!/\\/app\\/[a-zA-Z0-9_-]{4,}/.test(url)) {\n" +
+                    "    var can = document.querySelector('link[rel=\"canonical\"], meta[property=\"og:url\"]');\n" +
+                    "    var canUrl = can ? (can.getAttribute('href') || can.getAttribute('content') || '') : '';\n" +
+                    "    if (/\\/app\\/[a-zA-Z0-9_-]{4,}/.test(canUrl)) { url = canUrl; }\n" +
+                    "  }\n" +
                     "  var turns = [];\n" +
                     "  var qElements = document.querySelectorAll('user-query, .query-text, div[class*=\"user-query\"], .user-query-container, [data-message-author=\"user\"]');\n" +
                     "  var aElements = document.querySelectorAll('model-response, .response-content, div[class*=\"model-response\"], message-content, [data-message-author=\"model\"]');\n" +
@@ -478,6 +501,9 @@ public class VoyagerOverlayView extends FrameLayout {
                     "    var q = qElements[i] ? (qElements[i].innerText || '').trim() : '';\n" +
                     "    var a = aElements[i] ? (aElements[i].innerText || '').trim() : '';\n" +
                     "    if (q || a) { turns.push({ q: q, a: a }); }\n" +
+                    "  }\n" +
+                    "  if ((!title || title === 'Gemini' || title === 'Gemini 对话') && turns.length > 0 && turns[0].q) {\n" +
+                    "    title = turns[0].q.length > 25 ? turns[0].q.substring(0, 25) + '...' : turns[0].q;\n" +
                     "  }\n" +
                     "  return JSON.stringify({ title: title, url: url, turns: turns });\n" +
                     "})();";
@@ -492,7 +518,10 @@ public class VoyagerOverlayView extends FrameLayout {
                         }
                         JSONObject obj = new JSONObject(unescaped);
                         if (!obj.optString("title").isEmpty()) currentRealTitle = obj.optString("title");
-                        if (!obj.optString("url").isEmpty()) currentRealUrl = obj.optString("url");
+                        String extractedUrl = obj.optString("url");
+                        if (isValidGeminiConversationUrl(extractedUrl)) {
+                            currentRealUrl = extractedUrl;
+                        }
                         JSONArray arr = obj.optJSONArray("turns");
 
                         if (arr != null && arr.length() > 0) {
@@ -767,12 +796,12 @@ public class VoyagerOverlayView extends FrameLayout {
                     resumeBtn.setOnClickListener(v -> quickResumeIntoGemini(chat));
                     chatItem.addView(resumeBtn);
 
-                    // 离线快照查看按钮
+                    // 离线快照与详情面板查看按钮
                     TextView snapBtn = new TextView(getContext());
                     snapBtn.setText("📖");
                     snapBtn.setPadding(dp(4), dp(4), dp(4), dp(4));
                     snapBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-                    snapBtn.setOnClickListener(v -> showSnapshotViewerDialog(chat));
+                    snapBtn.setOnClickListener(v -> renderConversationDetailView(chat, folder));
                     chatItem.addView(snapBtn);
 
                     // 收藏/取消书签快捷按钮
@@ -797,8 +826,12 @@ public class VoyagerOverlayView extends FrameLayout {
                     delChatBtn.setOnClickListener(v -> confirmDeleteChat(folder, chat, allFolders));
                     chatItem.addView(delChatBtn);
 
-                    // 核心关键：点击条目直接打开该会话的完整问答记录看板与操作中心！
-                    chatItem.setOnClickListener(v -> renderConversationDetailView(chat, folder));
+                    // 核心关键：点击文件夹内条目，直接跳转到 Gemini 相对应的真实会话记录！
+                    chatItem.setOnClickListener(v -> enterAndSwitchConversation(chat));
+                    chatItem.setOnLongClickListener(v -> {
+                        renderConversationDetailView(chat, folder);
+                        return true;
+                    });
 
                     LinearLayout.LayoutParams itemLp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
                     itemLp.bottomMargin = dp(6);
@@ -1089,11 +1122,19 @@ public class VoyagerOverlayView extends FrameLayout {
             bottomRow.setPadding(0, dp(8), 0, 0);
 
             TextView jumpHintTv = new TextView(getContext());
-            jumpHintTv.setText("⚡ 点击直接进入相对应记录页");
+            jumpHintTv.setText("⚡ 点击直接打开该会话");
             jumpHintTv.setTextColor(Color.parseColor("#10A37F"));
             jumpHintTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
             jumpHintTv.setTypeface(null, Typeface.BOLD);
             bottomRow.addView(jumpHintTv, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+
+            TextView detailBtn = new TextView(getContext());
+            detailBtn.setText("📖 详情");
+            detailBtn.setTextColor(getSecondaryTextColor());
+            detailBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            detailBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
+            detailBtn.setOnClickListener(v -> renderConversationDetailView(chat, "🔖 我的书签", this::renderBookmarksView));
+            bottomRow.addView(detailBtn);
 
             TextView quickResumeBtn = new TextView(getContext());
             quickResumeBtn.setText("🚀 填入续聊");
@@ -1105,13 +1146,49 @@ public class VoyagerOverlayView extends FrameLayout {
 
             itemCard.addView(bottomRow);
 
-            // 【核心关键】：点击书签卡片，一下子跳转到相对应的对话记录页面！
-            itemCard.setOnClickListener(v -> renderConversationDetailView(chat, "🔖 我的书签", this::renderBookmarksView));
+            // 【核心关键】：点击书签卡片，直接跳转到 Gemini 该条真实对话中！长按查看离线快照与操作面板
+            itemCard.setOnClickListener(v -> enterAndSwitchConversation(chat));
+            itemCard.setOnLongClickListener(v -> {
+                renderConversationDetailView(chat, "🔖 我的书签", this::renderBookmarksView);
+                return true;
+            });
 
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
             lp.bottomMargin = dp(8);
             contentContainer.addView(itemCard, lp);
         }
+    }
+
+    /**
+     * 判断是否是包含有效会话 ID 的 Gemini 真实对话 URL
+     */
+    public static boolean isValidGeminiConversationUrl(String url) {
+        if (url == null || url.trim().isEmpty()) return false;
+        String clean = url.trim();
+        if (clean.contains("/app/")) {
+            int idx = clean.indexOf("/app/");
+            String after = clean.substring(idx + 5);
+            if (after.startsWith("?")) return false;
+            return after.length() >= 4;
+        }
+        return clean.contains("/share/");
+    }
+
+    /**
+     * 从完整 Gemini URL 中提取出独立的会话 ID (如 /app/3a8c1f90...)
+     */
+    public static String extractConversationId(String url) {
+        if (url == null) return "";
+        int idx = url.indexOf("/app/");
+        if (idx != -1) {
+            String after = url.substring(idx + 5);
+            int qIdx = after.indexOf('?');
+            if (qIdx != -1) after = after.substring(0, qIdx);
+            int hIdx = after.indexOf('#');
+            if (hIdx != -1) after = after.substring(0, hIdx);
+            return after.trim();
+        }
+        return "";
     }
 
     /**
@@ -1124,82 +1201,114 @@ public class VoyagerOverlayView extends FrameLayout {
      * 5. Deep Link 显式 Intent 唤醒与浮动智能续接条 (Floating Resume HUD)。
      */
     private void enterAndSwitchConversation(final SavedChat chat) {
+        if (chat == null) return;
         closeDrawer();
         Toast.makeText(activity, "⚡ 正在跳转至: " + chat.title, Toast.LENGTH_SHORT).show();
 
-        // 核心兜底保障：立即将原题填入提问框并聚焦，确保即使路由未生效也能即刻对话
-        fillToGemini(chat.title);
+        final String safeUrl = (chat.url == null) ? "" : chat.url.trim();
+        final String safeTitle = (chat.title == null) ? "" : chat.title.trim();
+        final boolean hasConvoUrl = isValidGeminiConversationUrl(safeUrl);
+        final String convoId = extractConversationId(safeUrl);
 
-        // 尝试方式一: WebView DOM 自动化导航与路由跳转 (针对 Web / 混合渲染容器)
-        WebView webView = findWebView(activity.getWindow().getDecorView());
+        // 1. 核心保障：自动将该会话原题/标题填入提问框并聚焦
+        fillToGemini(safeTitle);
+
+        // 2. 尝试方式一: WebView DOM 自动化导航与路由跳转 (针对 Web / 混合渲染容器)
+        final WebView webView = findWebView(activity.getWindow().getDecorView());
         if (webView != null) {
-            String safeUrl = (chat.url == null) ? "" : chat.url;
-            String safeTitle = (chat.title == null) ? "" : chat.title;
             String js = "(function() {\n" +
                     "  var targetUrl = " + JSONObject.quote(safeUrl) + ";\n" +
+                    "  var targetId = " + JSONObject.quote(convoId) + ";\n" +
                     "  var targetTitle = " + JSONObject.quote(safeTitle) + ";\n" +
-                    "  var clicked = false;\n" +
-                    "  var links = document.querySelectorAll('a[href*=\"/app/\"], [data-test-id=\"conversation-title\"], div[role=\"button\"], .conversation-title');\n" +
-                    "  for (var i = 0; i < links.length; i++) {\n" +
-                    "    var el = links[i];\n" +
-                    "    var href = el.getAttribute('href') || el.href || '';\n" +
-                    "    var text = (el.innerText || '').trim();\n" +
-                    "    if ((targetUrl.length > 25 && href && targetUrl.indexOf(href) !== -1) ||\n" +
-                    "        (targetTitle.length > 2 && text && (text.indexOf(targetTitle) !== -1 || targetTitle.indexOf(text) !== -1))) {\n" +
-                    "      el.click();\n" +
-                    "      clicked = true;\n" +
-                    "      break;\n" +
+                    "  function tryClickMatch() {\n" +
+                    "    var links = document.querySelectorAll('a[href*=\"/app/\"], [data-test-id=\"conversation-title\"], div[role=\"button\"], .conversation-title, li a');\n" +
+                    "    for (var i = 0; i < links.length; i++) {\n" +
+                    "      var el = links[i];\n" +
+                    "      var href = el.getAttribute('href') || el.href || '';\n" +
+                    "      var text = (el.innerText || '').trim();\n" +
+                    "      if ((targetId.length >= 4 && href.indexOf(targetId) !== -1) ||\n" +
+                    "          (targetTitle.length >= 2 && text && (text.indexOf(targetTitle) !== -1 || targetTitle.indexOf(text) !== -1))) {\n" +
+                    "        var clickable = el.closest('a') || el;\n" +
+                    "        clickable.click();\n" +
+                    "        return true;\n" +
+                    "      }\n" +
                     "    }\n" +
+                    "    return false;\n" +
                     "  }\n" +
-                    "  if (!clicked && targetUrl && targetUrl.indexOf('gemini.google.com') !== -1 && targetUrl.length > 28) {\n" +
+                    "  if (tryClickMatch()) return 'clicked_immediate';\n" +
+                    "  // 若未找到，可能侧边栏未展开，尝试寻找并点击汉堡菜单展开\n" +
+                    "  var menuBtn = document.querySelector('button[aria-label*=\"menu\" i], button[aria-label*=\"菜单\" i], button[aria-label*=\"导航\" i], [data-test-id=\"side-nav-button\"], .menu-button, button.side-nav-button');\n" +
+                    "  if (menuBtn) {\n" +
+                    "    menuBtn.click();\n" +
+                    "    setTimeout(function() {\n" +
+                    "      if (!tryClickMatch() && targetUrl && targetUrl.indexOf('/app/') !== -1 && targetId.length >= 4) {\n" +
+                    "        window.location.href = targetUrl;\n" +
+                    "      }\n" +
+                    "    }, 320);\n" +
+                    "    return 'menu_opened_deferred';\n" +
+                    "  }\n" +
+                    "  if (targetUrl && targetUrl.indexOf('/app/') !== -1 && targetId.length >= 4) {\n" +
                     "    window.location.href = targetUrl;\n" +
+                    "    return 'location_redirect';\n" +
                     "  }\n" +
-                    "  return clicked;\n" +
+                    "  return 'none';\n" +
                     "})();";
-            webView.evaluateJavascript(js, null);
-            if (safeUrl.length() > 28 && safeUrl.startsWith("http")) {
-                webView.loadUrl(safeUrl);
-            }
+
+            webView.evaluateJavascript(js, result -> {
+                if (hasConvoUrl) {
+                    mainHandler.postDelayed(() -> {
+                        try {
+                            String curWvUrl = webView.getUrl();
+                            if (curWvUrl == null || !curWvUrl.contains(convoId)) {
+                                webView.loadUrl(safeUrl);
+                            }
+                        } catch (Exception ignored) {}
+                    }, 450);
+                }
+            });
         }
 
-        // 尝试方式二: 直接在原生当前视图树中搜索目标会话条目
-        View matchView = findConversationViewInHierarchy(activity.getWindow().getDecorView(), chat.title);
+        // 3. 尝试方式二: 直接在原生当前视图树中搜索目标会话条目
+        View matchView = findConversationViewInHierarchy(activity.getWindow().getDecorView(), safeTitle);
         if (matchView != null) {
             View clickable = getClickableAncestorOrSelf(matchView);
             clickable.performClick();
-            Toast.makeText(activity, "✅ 已切换至「" + chat.title + "」", Toast.LENGTH_SHORT).show();
+            Toast.makeText(activity, "✅ 已切换至「" + safeTitle + "」", Toast.LENGTH_SHORT).show();
             showFloatingResumeHud(chat);
             return;
         }
 
-        // 尝试方式三 (核心机制突破): 若未直接找到，通常是因为 Gemini 原生“最近聊天”抽屉处于收起状态。
+        // 4. 尝试方式三: 若未直接找到，通常是因为 Gemini 原生“最近聊天”抽屉处于收起状态。
         // 自动检索并模拟点击 Gemini 顶栏左侧的汉堡菜单按钮 (☰)，展开最近聊天列表！
         View menuBtn = findGeminiMenuButton(activity.getWindow().getDecorView());
         if (menuBtn != null) {
             menuBtn.performClick();
-            // 等待 Gemini 侧边栏滑出与列表渲染（约 260ms）
             mainHandler.postDelayed(() -> {
-                View afterOpenView = findConversationViewInHierarchy(activity.getWindow().getDecorView(), chat.title);
+                View afterOpenView = findConversationViewInHierarchy(activity.getWindow().getDecorView(), safeTitle);
                 if (afterOpenView != null) {
                     View clickable = getClickableAncestorOrSelf(afterOpenView);
                     clickable.performClick();
-                    Toast.makeText(activity, "✅ 已切换至「" + chat.title + "」", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(activity, "✅ 已切换至「" + safeTitle + "」", Toast.LENGTH_SHORT).show();
                 } else {
-                    // 若最近列表中未找到（如历史较久远），提供快照阅读与一键提问
                     showFloatingResumeHud(chat);
                 }
-            }, 260);
+            }, 300);
         } else {
-            // 尝试方式四: Android Deep Link Intent
-            if (chat.url != null && chat.url.contains("/app/") && chat.url.length() > 30) {
+            // 5. 尝试方式四: Android Deep Link Intent
+            if (hasConvoUrl) {
                 try {
-                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(chat.url));
+                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(safeUrl));
                     intent.setPackage("com.google.android.apps.bard");
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
                     activity.startActivity(intent);
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    try {
+                        Intent fallbackIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(safeUrl));
+                        fallbackIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        activity.startActivity(fallbackIntent);
+                    } catch (Exception ignored) {}
+                }
             }
-            // 尝试方式五: 弹出浮动智能续接横幅 (Floating Resume HUD)
             showFloatingResumeHud(chat);
         }
     }
@@ -1389,6 +1498,14 @@ public class VoyagerOverlayView extends FrameLayout {
     }
 
     private void saveChatToSpecificFolder(FolderData target, List<FolderData> allFolders) {
+        WebView wv = findWebView(activity.getWindow().getDecorView());
+        if (wv != null && wv.getUrl() != null && isValidGeminiConversationUrl(wv.getUrl())) {
+            currentRealUrl = wv.getUrl();
+        }
+        if ((currentRealTitle.isEmpty() || currentRealTitle.equals("Gemini 对话") || currentRealTitle.equals("Gemini")) && !currentTurns.isEmpty() && !currentTurns.get(0).question.isEmpty()) {
+            currentRealTitle = currentTurns.get(0).question;
+        }
+
         SavedChat chat = new SavedChat();
         chat.title = currentRealTitle.isEmpty() ? "Gemini 深度分析对话" : currentRealTitle;
         chat.url = currentRealUrl;
@@ -1837,13 +1954,35 @@ public class VoyagerOverlayView extends FrameLayout {
 
     // ==================== 自动化寻路辅助 ====================
     private void fillToGemini(String text) {
+        if (text == null || text.trim().isEmpty()) return;
         boolean ok = autoFillGeminiInput(activity.getWindow().getDecorView(), text);
+
+        WebView webView = findWebView(activity.getWindow().getDecorView());
+        if (webView != null) {
+            String js = "(function() {\n" +
+                    "  var txt = " + JSONObject.quote(text) + ";\n" +
+                    "  var el = document.querySelector('rich-textarea div[contenteditable=\"true\"], div[contenteditable=\"true\"], textarea.textarea, textarea, [data-placeholder*=\"Gemini\"]');\n" +
+                    "  if (el) {\n" +
+                    "    el.focus();\n" +
+                    "    if (el.tagName.toLowerCase() === 'textarea' || el.tagName.toLowerCase() === 'input') {\n" +
+                    "      el.value = txt;\n" +
+                    "    } else {\n" +
+                    "      el.innerText = txt;\n" +
+                    "    }\n" +
+                    "    el.dispatchEvent(new Event('input', { bubbles: true }));\n" +
+                    "    el.dispatchEvent(new Event('change', { bubbles: true }));\n" +
+                    "    return true;\n" +
+                    "  }\n" +
+                    "  return false;\n" +
+                    "})();";
+            webView.evaluateJavascript(js, null);
+        }
+
         if (ok) {
             Toast.makeText(activity, "✅ 已自动填入提问框并聚焦", Toast.LENGTH_SHORT).show();
             closeDrawer();
         } else {
             copyToClipboard(text);
-            Toast.makeText(activity, "已复制到剪贴板，请长按粘贴", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -2054,6 +2193,14 @@ public class VoyagerOverlayView extends FrameLayout {
     }
 
     private void addCurrentChatToBookmarks() {
+        WebView wv = findWebView(activity.getWindow().getDecorView());
+        if (wv != null && wv.getUrl() != null && isValidGeminiConversationUrl(wv.getUrl())) {
+            currentRealUrl = wv.getUrl();
+        }
+        if ((currentRealTitle.isEmpty() || currentRealTitle.equals("Gemini 对话") || currentRealTitle.equals("Gemini")) && !currentTurns.isEmpty() && !currentTurns.get(0).question.isEmpty()) {
+            currentRealTitle = currentTurns.get(0).question;
+        }
+
         SavedChat sc = new SavedChat();
         sc.title = currentRealTitle.isEmpty() ? "Gemini 深度分析对话" : currentRealTitle;
         sc.url = currentRealUrl;
