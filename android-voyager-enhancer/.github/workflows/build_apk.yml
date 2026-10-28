@@ -6,16 +6,24 @@ on:
   pull_request:
     branches: [ "**" ]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release 版本 Tag (如 v1.00, v1.01)'
+        required: false
+        default: 'v1.00'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
 
     steps:
       - name: 检出仓库源码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 设置 JDK 17
         uses: actions/setup-java@v4
@@ -31,14 +39,12 @@ jobs:
       - name: 接受 Android SDK 协议
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
 
-      - name: 自动修复工程文件与依赖
+      - name: 自动准备工程文件与依赖
         run: |
-          if [ ! -f "build.gradle" ]; then
-            SUBDIR=$(find . -maxdepth 2 -name "build.gradle" -not -path "*/app/*" | head -n 1 | xargs dirname 2>/dev/null || true)
-            if [ -n "$SUBDIR" ] && [ "$SUBDIR" != "." ]; then
-              echo "检测到工程在子目录 $SUBDIR，移至根目录..."
-              cp -rf "$SUBDIR"/* . || true
-            fi
+          echo "==== 1. 检查并准备工程目录 ===="
+          if [ -d "android-voyager-enhancer" ]; then
+            echo "检测到 android-voyager-enhancer 源码目录，同步至根构建目录..."
+            cp -rf android-voyager-enhancer/* .
           fi
 
           mkdir -p app/libs
@@ -47,16 +53,10 @@ jobs:
             curl -sLo app/libs/xposed-api-82.jar https://api.xposed.info/de/robv/android/xposed/api/82/api-82.jar || true
           fi
 
-          if ! grep -q "fileTree" app/build.gradle 2>/dev/null; then
-            sed -i "s/dependencies {/dependencies {\n    compileOnly fileTree(dir: 'libs', include: ['*.jar'])/" app/build.gradle || true
+          # 确保全局唯一的固定签名密钥存在，保持 APK 签名永不改变（支持无缝覆盖更新）
+          if [ ! -f "app/voyager-release.jks" ]; then
+            find . -name "voyager-release.jks" -exec cp {} app/voyager-release.jks \; 2>/dev/null || true
           fi
-
-          if ! grep -q "api.xposed.info" settings.gradle 2>/dev/null; then
-            sed -i "s|mavenCentral()|mavenCentral()\n        maven { url 'https://api.xposed.info/' }|g" settings.gradle || true
-          fi
-
-          find . -name "VoyagerOverlayView.java" -exec sed -i 's/sp.getString("folders",.*/sp.getString("folders", "[]");/' {} + 2>/dev/null || true
-          find . -name "VoyagerOverlayView.java" -exec sed -i 's/sp.getString("prompts",.*/sp.getString("prompts", "[]");/' {} + 2>/dev/null || true
 
           if [ -f "./gradlew" ]; then
             sed -i 's/\r$//' ./gradlew || true
@@ -65,6 +65,7 @@ jobs:
 
       - name: 编译 Debug 版 APK
         run: |
+          echo "==== 2. 开始 Gradle 构建 ===="
           if [ -f "./gradlew" ]; then
             ./gradlew assembleDebug --no-daemon --stacktrace
           else
@@ -73,24 +74,32 @@ jobs:
 
       - name: 提取扁平化 APK (零文件夹嵌套)
         run: |
+          echo "==== 3. 提取编译产物 ===="
           mkdir -p single_apk
           find . -name "*debug*.apk" -exec cp {} single_apk/Voyager-Gemini-Enhancer.apk \;
+          if [ ! -f "single_apk/Voyager-Gemini-Enhancer.apk" ]; then
+            echo "警告：未找到 debug apk，尝试搜索所有 apk..."
+            find . -name "*.apk" -exec cp {} single_apk/Voyager-Gemini-Enhancer.apk \;
+          fi
           ls -lh single_apk/
 
-      - name: 备份上传至 Artifacts
+      - name: 备份上传至 Artifacts (未配置 Release 权限也可在此直接下载)
         uses: actions/upload-artifact@v4
         with:
           name: Voyager-Gemini-Enhancer-APK
           path: single_apk/Voyager-Gemini-Enhancer.apk
-          retention-days: 7
+          retention-days: 14
 
       - name: 自动发布到 GitHub Releases (免解压直链 APK)
         uses: softprops/action-gh-release@v2
         if: github.event_name != 'pull_request'
         with:
-          tag_name: "v1.00"
+          tag_name: ${{ github.event.inputs.release_tag || 'v1.00' }}
           name: "Voyager for Gemini 1.00"
+          make_latest: true
           body: |
+            - 🪐 **Gemini 额度与刷新时间监控 UI (StatusBar Capsule)**：胶囊型/圆角扁平顶部悬浮条，双进度条实时显示短期与每周额度用量、绿色指示点、动态精确倒计时；右侧集成 ↻ 手动刷新与 🗗 详情弹窗。
+            - 🪟 **FloatingQuotaView (WindowManager 架构)**：基于独立 WindowManager 浮动层渲染，支持全屏自由平滑触控拖拽与安全生命周期回收。
             - 🔘 **圆形发光悬浮球**：升级为 52dp 翡翠绿圆形发光悬浮球，支持全屏自由拖拽、松手平滑自动贴边吸附、闲置自动半透明淡化。
             - 🔖 **会话书签与极速直达**：新增星标会话书签功能，一键收藏重点对话；点击书签卡片即刻直达相对应对话记录与完整问答详情页面。
             - 📂 **三级分类文件夹**：精准捕获并收录当前会话，支持树状文件夹归类管理与点击回溯问答记录。
